@@ -4,6 +4,7 @@ import math
 import torch
 import torch.nn as nn
 
+from functools import partial
 from src.models.utils.modules import ACBlock
 from src.models.utils.modules import build_action_block_causal_attention_mask
 from src.utils.tensors import trunc_normal_
@@ -193,7 +194,14 @@ class VisionTransformerPredictorAC(nn.Module):
 
 
 
-
+def vit_ac_predictor(**kwargs):
+    model = VisionTransformerPredictorAC(
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6),
+        **kwargs
+    )
+    return model
 
 
 
