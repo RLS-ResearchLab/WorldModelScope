@@ -52,10 +52,9 @@ class VisionTransformerPredictorAC(nn.Module):
         self.num_frames = num_frames
         self.tubelet_size = tubelet_size
 
-
-
         #from embed_dim-->pred_embed_dim 
         #4proj(patches,state,action,extrinsics)
+        
         self.predictor_embed = nn.Linear(embed_dim,pred_embed_dim,bias=True)
         self.action_embed = nn.Linear(action_dim,pred_embed_dim,bias=True)
         self.state_embed = nn.Linear(state_dim,pred_embed_dim,bias=True)
@@ -88,8 +87,6 @@ class VisionTransformerPredictorAC(nn.Module):
         #normalize and back to targert size
         self.predictor_norm = norm_layer(pred_embed_dim)
         self.predictor_proj = nn.Linear(pred_embed_dim,embed_dim,bias=True)
-
-
         #weight initialization
         self.init_std = init_std
         self.apply(self._init_weights)
@@ -124,7 +121,6 @@ class VisionTransformerPredictorAC(nn.Module):
 
     def forward(self,x,actions,states,extrinsics=None,T=None):
         # x: context token 
-        
         B,N,C = x.shape
         H_patches, W_patches = self.grid_height, self.grid_width
         K = 3 if self.use_extrinsics else 2
@@ -188,12 +184,6 @@ class VisionTransformerPredictorAC(nn.Module):
         return x
 
 
-
-
-
-
-
-
 def vit_ac_predictor(**kwargs):
     model = VisionTransformerPredictorAC(
         mlp_ratio=4,
@@ -202,7 +192,3 @@ def vit_ac_predictor(**kwargs):
         **kwargs
     )
     return model
-
-
-
-
