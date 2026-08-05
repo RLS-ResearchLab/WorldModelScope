@@ -6,7 +6,7 @@ from functools import partial
 
 from src.models.utils.modules import Block
 from src.masks.utils import apply_masks
-from src.utils import trunc_normal_
+from src.models.utils.tensors import trunc_normal_
 
 class PatchEmbed(nn.Module):
 
@@ -120,32 +120,32 @@ class VisionTransformer(nn.Module):
         self.apply(self._init_weights)
         self._rescale_blocks()
 
-        def _init_weights(self,m):
-            if isinstance(m,nn.Linear):
-                trunc_normal_(m.weight, std=self.init_std)
-            if isinstance(m, nn.Linear) and m.bias is not None:
+    def _init_weights(self,m):
+        if isinstance(m,nn.Linear):
+            trunc_normal_(m.weight, std=self.init_std)
+        if isinstance(m, nn.Linear) and m.bias is not None:
+            nn.init.constant_(m.bias, 0)
+
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+        elif isinstance(m,nn.Conv2d):
+            trunc_normal_(m.weight, std=self.init_std)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Conv3d):
+            trunc_normal_(m.weight, std=self.init_std)
+            if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
-            elif isinstance(m, nn.LayerNorm):
-                nn.init.constant_(m.bias, 0)
-                nn.init.constant_(m.weight, 1.0)
+    def _rescale_blocks(self):  #to review other approach
+        def rescale(param, layer_id):
+            param.div_(math.sqrt(2.0 * layer_id))
 
-            elif isinstance(m,nn.Conv2d):
-                trunc_normal_(m.weight, std=self.init_std)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Conv3d):
-                trunc_normal_(m.weight, std=self.init_std)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-
-        def _rescale_blocks(self):  #to review other approach
-            def rescale(param, layer_id):
-                param.div_(math.sqrt(2.0 * layer_id))
-
-            for layer_id, layer in enumerate(self.blocks):
-                rescale(layer.attn.proj.weight.data, layer_id + 1)
-                rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+        for layer_id, layer in enumerate(self.blocks):
+            rescale(layer.attn.proj.weight.data, layer_id + 1)
+            rescale(layer.mlp.fc2.weight.data, layer_id + 1)
 
     def forward(self,x,masks=None):
         if masks is not None and not isinstance(masks,list):

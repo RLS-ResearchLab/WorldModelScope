@@ -96,7 +96,7 @@ class VisionTransformerPredictor(nn.Module):
         # -- project context tokens into predictor's working dim
         x = self.predictor_embed(context_tokens)
 
-        # -- build mask-token placeholders for every target position
+        # -- build mask-token placeho.0l0ders for every target position
         pred_tokens = self.mask_token.repeat(B, masks_target.shape[1], 1)
 
         # -- concatenate context + target placeholders into one sequence
