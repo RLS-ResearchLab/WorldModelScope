@@ -1,29 +1,33 @@
-""" Input image:        224 × 224
-Encoder:            DINOv2 ViT-S/14
-Patch size:         14 × 14
-Feature:            x_norm_patchtokens
-Feature dimension: 384
-Number of patches:  16 × 16 = 256
-Output:             [B, 256, 384]
-Encoder:            frozen"""
-
-
 import torch
-
-from models.encoders.dinov2 import DINOv2Encoder
 
 
 def main():
-
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "cpu"
     )
 
-    encoder = DINOv2Encoder(
-        model_name="dinov2_vits14",
-        freeze=True,
-    ).to(device)
+    print("Device:", device)
 
+    # ---------------------------------------------------------
+    # 1. Load official pretrained DINOv2 ViT-S/14
+    # ---------------------------------------------------------
+    model = torch.hub.load(
+        "facebookresearch/dinov2",
+        "dinov2_vits14",
+    )
+
+    model = model.to(device)
+    model.eval()
+
+    # ---------------------------------------------------------
+    # 2. Freeze encoder
+    # ---------------------------------------------------------
+    for param in model.parameters():
+        param.requires_grad = False
+
+    # ---------------------------------------------------------
+    # 3. Create test image
+    # ---------------------------------------------------------
     images = torch.randn(
         2,
         3,
@@ -32,20 +36,54 @@ def main():
         device=device,
     )
 
+    # ---------------------------------------------------------
+    # 4. Forward pass
+    # ---------------------------------------------------------
     with torch.no_grad():
-        features = encoder(images)
+        output = model.forward_features(images)
 
-    print("Input shape :", images.shape)
-    print("Output shape:", features.shape)
-    print("Embedding dim:", encoder.embed_dim)
+    # ---------------------------------------------------------
+    # 5. Inspect official output
+    # ---------------------------------------------------------
+    print("\n===== DINOv2 =====")
 
-    # Check that encoder is frozen
-    trainable = sum(
-        p.requires_grad
-        for p in encoder.parameters()
+    print("Input shape:")
+    print(images.shape)
+
+    print("\nOutput keys:")
+    print(output.keys())
+
+    for key, value in output.items():
+        if isinstance(value, torch.Tensor):
+            print(f"{key:25s}: {value.shape}")
+
+    # ---------------------------------------------------------
+    # 6. Get spatial patch tokens
+    # ---------------------------------------------------------
+    patch_tokens = output["x_norm_patchtokens"]
+
+    print("\nSpatial patch tokens:")
+    print("Shape:", patch_tokens.shape)
+
+    B, N, D = patch_tokens.shape
+
+    print("\nExtracted dimensions:")
+    print("B =", B)
+    print("N =", N)
+    print("D =", D)
+
+    # ---------------------------------------------------------
+    # 7. Frozen check
+    # ---------------------------------------------------------
+    trainable_params = sum(
+        p.numel()
+        for p in model.parameters()
+        if p.requires_grad
     )
 
-    print("Trainable parameters:", trainable)
+    print("\nTrainable parameters:", trainable_params)
+
+    assert trainable_params == 0
 
 
 if __name__ == "__main__":
