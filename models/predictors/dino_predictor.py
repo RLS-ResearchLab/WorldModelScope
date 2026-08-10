@@ -43,13 +43,6 @@ def generate_causal_mask(
         )
     )
 
-    # Expand every frame-level entry into a
-    # num_tokens_per_frame x num_tokens_per_frame block.
-    #
-    # Result:
-    #
-    # (num_frames * num_tokens_per_frame,
-    #  num_frames * num_tokens_per_frame)
     mask = frame_mask.repeat_interleave(
         num_tokens_per_frame,
         dim=0,
@@ -58,21 +51,12 @@ def generate_causal_mask(
         dim=1,
     )
 
-    # Add batch and attention-head dimensions.
-    #
-    # (T*N, T*N)
-    #
-    # -> (1, 1, T*N, T*N)
+
     return mask.unsqueeze(0).unsqueeze(0)
 
 
 class FeedForward(nn.Module):
-    """
-    Transformer feed-forward block.
 
-    DINO-WM predictor uses a standard Transformer-style MLP
-    after the attention block.
-    """
 
     def __init__(
         self,
@@ -96,21 +80,6 @@ class FeedForward(nn.Module):
 
 
 class Attention(nn.Module):
-    """
-    Multi-head self-attention with temporal causal masking.
-
-    Input:
-        x: (B, N, D)
-
-    where:
-        N = num_frames * num_tokens_per_frame
-        D = embedding dimension
-
-    num_tokens_per_frame = num_visual_patches + 1 (action token),
-    as assembled by DINOWM.predict() before this module ever sees the
-    sequence. This module is agnostic to that fact — it just needs the
-    count to build the correctly-shaped causal mask.
-    """
 
     def __init__(
         self,
@@ -147,16 +116,6 @@ class Attention(nn.Module):
 
         self.num_frames = num_frames
         self.num_patches = num_patches
-
-        # Register the mask as a buffer.
-        #
-        # when the model is moved to:
-        #
-        #     cuda
-        #     cpu
-        #     another device
-        #
-        # the mask moves with it.
         self.register_buffer(
             "causal_mask",
             generate_causal_mask(
@@ -167,35 +126,15 @@ class Attention(nn.Module):
         )
 
     def forward(self, x):
-
-        # x:
-        #
-        # (B, N, D)
-        #
-        # N = T * (P + 1)
-
         B, N, D = x.shape
 
         x = self.norm(x)
 
-        # Create Q, K and V.
-        #
-        # Each:
-        #
-        # (B, N, heads * dim_head)
 
         q, k, v = self.to_qkv(x).chunk(
             3,
             dim=-1,
         )
-
-        # Convert into multi-head representation:
-        #
-        # (B, N, H*Dh)
-        #
-        # ->
-        #
-        # (B, H, N, Dh)
 
         q = rearrange(
             q,
@@ -215,18 +154,7 @@ class Attention(nn.Module):
             h=self.heads,
         )
 
-        # Scaled dot-product attention.
-        #
-        # (B, H, N, Dh)
-        #
-        # x
-        #
-        # (B, H, Dh, N)
-        #
-        # ->
-        #
-        # (B, H, N, N)
-
+    
         dots = torch.matmul(
             q,
             k.transpose(-1, -2),
@@ -239,41 +167,20 @@ class Attention(nn.Module):
             :N,
         ]
 
-        # Prevent attending to future frames.
         dots = dots.masked_fill(
             mask == 0,
             torch.finfo(dots.dtype).min,
         )
 
-        # Convert attention scores into probabilities.
+     
         attn = self.attend(dots)
 
         attn = self.dropout(attn)
-
-        # Apply attention to V.
-        #
-        # (B, H, N, N)
-        #
-        # x
-        #
-        # (B, H, N, Dh)
-        #
-        # ->
-        #
-        # (B, H, N, Dh)
 
         out = torch.matmul(
             attn,
             v,
         )
-
-        # Merge attention heads.
-        #
-        # (B, H, N, Dh)
-        #
-        # ->
-        #
-        # (B, N, H*Dh)
 
         out = rearrange(
             out,
@@ -342,43 +249,7 @@ class Transformer(nn.Module):
 
 
 class ViTPredictor(nn.Module):
-    """
-    ViT-based latent predictor used in DINO-WM.
-
-    Input:
-        x: (B, T * N, D)
-
-    where:
-        B = batch size
-        T = number of frames in the window (num_hist + num_pred)
-        N = tokens per frame = num_visual_patches + 1
-            (the "+1" is the action token DINOWM.predict() concatenates
-            onto each frame's visual patch tokens before calling this
-            module — see DINOWM.predict())
-        D = shared embedding dimension (post feature_adapter, so it's
-            identical regardless of which frozen encoder — DINOv2,
-            DUNE, VGGT, ... — produced the visual tokens)
-
-    Output:
-        x: (B, T * N, D)
-
-    The predictor operates entirely in latent space and is unaware of
-    which token slots are "visual" vs. "action" — DINOWM is responsible
-    for slicing action-token outputs back out after calling this module.
-
-    Example:
-
-        DINOv2 patch tokens per frame: 256 (P) -> 257 (P+1) after
-        the action token is appended.
-
-        emb_dim = 384, T = num_hist + num_pred = 4
-
-        Before predictor:
-            (B, 4 * 257, 384)
-        After predictor:
-            (B, 4 * 257, 384)
-    """
-
+  
     def __init__(
         self,
         *,

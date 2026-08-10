@@ -4,41 +4,7 @@ import torch.nn.functional as F
 
 
 class DINOWM(nn.Module):
-    """
-    DINO World Model.
-
-    Components:
-
-        observation
-             │
-             ▼
-        DINO encoder
-             │
-             ▼
-        visual latent
-             │
-             ├───────────────┐
-             │               │
-             ▼               ▼
-       context latent    action encoder
-                             │
-                             ▼
-                        action latent
-                             │
-                             ▼
-                       predictor
-                             │
-                             ▼
-                      predicted latent
-                             │
-                             ▼
-                    future DINO target
-
-    Training objective:
-        predict future visual features in latent space.
-
-    The DINO encoder is normally frozen.
-    """
+   
 
     def __init__(
     self,
@@ -50,7 +16,7 @@ class DINOWM(nn.Module):
     loss_type="mse",
     normalize_targets=False,   # paper uses plain MSE, no normalization by default
     encoder_trainable=False,
-    feature_adapter=None,      # <-- new
+    feature_adapter=None,     
 ):
         super().__init__()
 
@@ -88,10 +54,7 @@ class DINOWM(nn.Module):
         else:
             raise ValueError(f"Unexpected encoder output shape: {features.shape}")
 
-        # Project to the shared predictor dim. Applied OUTSIDE the no_grad
-        # block above so the adapter itself stays trainable even when the
-        # encoder is frozen — this is what lets you swap DINOv2/DUNE/VGGT
-        # without touching the predictor.
+ 
         if self.feature_adapter is not None:
             features = self.feature_adapter(features)
 
@@ -115,14 +78,7 @@ class DINOWM(nn.Module):
     
 
     def predict(self, context, actions):
-        """
-        context: (B, T, P, D)   encoded visual tokens for the FULL window
-        actions: (B, T, A)      raw actions aligned 1:1 with `context`
-                                actions[:, t] is the action taken FROM frame t
-
-        Returns predicted visual tokens (B, T, P, D); predicted[:, t]
-        approximates frame t+1's visual embedding.
-        """
+     
         B, T, P, D = context.shape
 
         action_tokens = self.encode_actions(actions)        # (B, T, D)
@@ -135,8 +91,7 @@ class DINOWM(nn.Module):
         out = self.predictor(tokens)                         # (B, T*(P+1), D)
         out = out.reshape(B, T, P + 1, D)
 
-        # Only the visual-patch slots are used as the "next frame" prediction;
-        # the transformed action-token output is discarded.
+       
         return out[:, :, :P, :]
 
    
@@ -153,12 +108,11 @@ class DINOWM(nn.Module):
         z = self.encode_observations(observations)          # (B, T, P, D)
         predicted = self.predict(context=z, actions=actions) # (B, T, P, D)
 
-        # Shift-by-one: predicted[:, t] targets frame t+1.
+       
         predicted = predicted[:, :-1]
         target = z[:, 1:]
 
-        # Only supervise the future horizon (matches num_hist/num_pred split
-        # and what actually happens during rollout).
+        
         predicted = predicted[:, self.num_hist - 1:]
         target = target[:, self.num_hist - 1:]
 
@@ -169,7 +123,7 @@ class DINOWM(nn.Module):
     @torch.no_grad()
     def validation_step(self, batch):
         self.eval()
-        return self.compute_loss(batch)   # identical logic, just no_grad + eval
+        return self.compute_loss(batch)   
 
 
     @torch.no_grad()
