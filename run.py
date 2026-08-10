@@ -1,7 +1,7 @@
 import argparse
 from src.utils.config import load_config
 
-from models.factory import build_model
+from models.world_models.factory import build_model
 
 from data.dataloader import build_dataloader
 
@@ -10,7 +10,7 @@ from src.utils.scheduler import build_schedulers
 from src.utils.logger import build_logger
 from src.utils.checkpoints import CheckpointManager
 
-from train.run import Trainer
+from train import Trainer
 
 
 def main(config_path):
@@ -53,8 +53,6 @@ def main(config_path):
 
 
 if __name__ == "__main__":
-
-    import argparse
 
     parser = argparse.ArgumentParser()
 

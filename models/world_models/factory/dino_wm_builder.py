@@ -1,9 +1,10 @@
 import torch
 
-from models.dino_wm import DINOWM
-from models.action_encoder import DINOWMActionEncoder
-from models.feature_adapter import FeatureAdapter
-from models.predictor import ViTPredictor
+from models.world_models.dino_wm import DINOWM
+
+from models.encoders.action_encoder import DINOWMActionEncoder
+from models.encoders.feature_adapter import FeatureAdapter
+from models.predictors.dino_predictor import ViTPredictor
 from models.encoders.dinov2 import DINOv2Encoder
 
 ENCODER_REGISTRY = {
