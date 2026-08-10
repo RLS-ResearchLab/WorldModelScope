@@ -1,145 +1,73 @@
-
 """
-EUPE-ViT-S encoder wrapper for the World Model.
+EUPE ViT-Small encoder.
+
+Loads the pretrained EUPE ViT-Small model through timm.
+Weights are automatically downloaded from Hugging Face on first use
+and cached locally for subsequent runs.
 
 Input:
-    images: [B, 3, 224, 224]
+    [B, 3, H, W]
 
 Output:
-    patch tokens: [B, 196, 384]
+    [B, N, 384]
+    where N = (H / 16) * (W / 16)
 
-The EUPE encoder is frozen.
+Example:
+    224x224 -> [B, 196, 384]
+    256x256 -> [B, 256, 384]
 """
-
-import sys
-from pathlib import Path
 
 import torch
 import torch.nn as nn
-
-
-# ============================================================
-# Locate the official EUPE repository
-# ============================================================
-
-EUPE_ROOT = Path(r"C:\world_model\EUPE")
-
-if str(EUPE_ROOT) not in sys.path:
-    sys.path.insert(0, str(EUPE_ROOT))
-
-
-from eupe.hub.backbones import eupe_vits16
+import timm
 
 
 class EUPEEncoder(nn.Module):
     """
-    Frozen EUPE-ViT-S encoder.
+    Frozen EUPE ViT-Small encoder.
 
-    EUPE-ViT-S configuration:
-
-        Image size     : 224 x 224
-        Patch size     : 16 x 16
-        Number patches : 14 x 14 = 196
-        Embedding dim  : 384
+    Uses:
+        vit_small_patch16_dinov3_qkvb.eupe_lvd1689m
 
     Output:
-        [B, 196, 384]
+        Patch-level EUPE representations.
     """
 
-    def __init__(
-        self,
-        checkpoint_path: str,
-        freeze: bool = True,
-    ):
+    def __init__(self):
         super().__init__()
 
+        self.model = timm.create_model(
+            "vit_small_patch16_dinov3_qkvb.eupe_lvd1689m",
+            pretrained=True,
+            num_classes=0,
+        )
+
+        self.model.eval()
+
+        # EUPE ViT-Small
         self.embed_dim = 384
-        self.num_patches = 196
         self.patch_size = 16
 
-        # ----------------------------------------------------
-        # Build the official EUPE architecture
-        # ----------------------------------------------------
+        # CLS + register/storage tokens
+        self.num_prefix_tokens = self.model.num_prefix_tokens
 
-        self.model = eupe_vits16(
-            pretrained=False
-        )
+        # Freeze encoder
+        for param in self.model.parameters():
+            param.requires_grad = False
 
-        # ----------------------------------------------------
-        # Load pretrained EUPE checkpoint
-        # ----------------------------------------------------
-
-        checkpoint = torch.load(
-            checkpoint_path,
-            map_location="cpu"
-        )
-
-        missing_keys, unexpected_keys = (
-            self.model.load_state_dict(
-                checkpoint,
-                strict=False
-            )
-        )
-
-        if missing_keys:
-            print(
-                "EUPE missing keys:",
-                missing_keys
-            )
-
-        if unexpected_keys:
-            print(
-                "EUPE unexpected keys:",
-                unexpected_keys
-            )
-
-        # ----------------------------------------------------
-        # Freeze EUPE
-        # ----------------------------------------------------
-
-        if freeze:
-
-            for parameter in self.model.parameters():
-                parameter.requires_grad = False
-
-            self.model.eval()
-
-    # ========================================================
-    # Forward
-    # ========================================================
-
-    def forward(self, images):
+    @torch.no_grad()
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            images:
-                [B, 3, 224, 224]
+            x: [B, 3, H, W]
 
         Returns:
-            patch_tokens:
-                [B, 196, 384]
+            Patch tokens: [B, N, 384]
         """
 
-        # ----------------------------------------------------
-        # EUPE forward
-        # ----------------------------------------------------
+        features = self.model.forward_features(x)
 
-        features = self.model.forward_features(images)
-
-        # ----------------------------------------------------
-        # Keep ONLY spatial patch tokens.
-        #
-        # EUPE internally produces:
-        #
-        #   1 CLS token
-        #   4 storage tokens
-        #   196 patch tokens
-        #
-        # We only need the 196 spatial tokens.
-        # ----------------------------------------------------
-
-        patch_tokens = features[
-            "x_norm_patchtokens"
-        ]
+        # Remove CLS/register tokens.
+        patch_tokens = features[:, self.num_prefix_tokens:, :]
 
         return patch_tokens
-

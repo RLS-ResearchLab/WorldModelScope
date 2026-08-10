@@ -1,0 +1,651 @@
+
+import torch
+from tqdm import tqdm
+
+
+class Trainer:
+    """
+    Generic training engine shared by all world models.
+
+
+    It handles:
+        - epochs
+        - batches
+        - AMP
+        - FP16 GradScaler
+        - gradient accumulation
+        - gradient clipping
+        - optimizer steps
+        - scheduler steps
+        - logging
+        - validation
+        - checkpointing
+        - resume
+
+    Model-specific logic must be implemented by the model:
+
+        model.compute_loss(batch)
+
+        model.validation_step(batch)
+
+    """
+
+    def __init__(
+        self,
+        model,
+        train_loader,
+        optimizers,
+        schedulers=None,
+        val_loader=None,
+        logger=None,
+        checkpoint_manager=None,
+        config=None,
+    ):
+        self.model = model
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        device_type=self.device.type,
+
+        self.optimizers = optimizers or {}
+        self.schedulers = schedulers or {}
+
+        self.logger = logger
+        self.checkpoint_manager = checkpoint_manager
+
+        self.config = config or {}
+
+        # ==========================================================
+        # TRAINING CONFIG
+        # ==========================================================
+
+        training_cfg = self.config.get("training", {})
+
+        self.num_epochs = training_cfg.get(
+            "epochs",1)
+
+        self.device = training_cfg.get(
+            "device",
+            "cuda" if torch.cuda.is_available() else "cpu",
+        )
+
+        self.precision = training_cfg.get(
+            "precision",
+            "fp32",
+        )
+
+        self.grad_accumulation_steps = training_cfg.get(
+            "grad_accumulation_steps",
+            1,
+        )
+
+        self.max_grad_norm = training_cfg.get(
+            "max_grad_norm",
+            None,
+        )
+
+        self.val_every = training_cfg.get(
+            "val_every",
+            1,
+        )
+
+        self.save_every = training_cfg.get(
+            "save_every",
+            1,
+        )
+        self.log_every = training_cfg.get(
+                    "log_every",
+                    1,
+                )
+        self.warmup_steps = training_cfg.get("warmup_steps")
+        self.batch = training_cfg.get("batch")
+         
+
+
+        # DEVICE
+        self.device = torch.device(
+            training_cfg.get(
+                "device",
+                "cuda" if torch.cuda.is_available() else "cpu",
+            )
+        )
+
+        self.use_amp = (
+            self.device.type == "cuda"
+            and self.precision != "fp32"
+        )
+
+        if self.precision == "bf16":
+
+            self.amp_dtype = torch.bfloat16
+
+        elif self.precision == "fp16":
+
+            self.amp_dtype = torch.float16
+
+        else:
+
+            self.amp_dtype = torch.float32
+
+        # GradScaler is useful for FP16.
+        # BF16 normally does not need it.
+        if (
+            self.precision == "fp16"
+            and self.use_amp
+        ):
+
+            self.scaler = torch.amp.GradScaler(
+                "cuda"
+            )
+
+        else:
+
+            self.scaler = None
+
+        # ==========================================================
+        # RESUME STATE
+        # ==========================================================
+
+        self.start_epoch = 0
+        self.global_step = 0
+
+        self.history = []
+
+    # ==============================================================
+    # TRAIN ONE EPOCH
+    # ==============================================================
+
+    def train_epoch(self, epoch):
+
+        self.model.train()
+
+        total_loss = 0.0
+        num_batches = 0
+
+        self._zero_grad()
+
+        progress = tqdm(
+            self.train_loader,
+            desc=(
+                f"Epoch "
+                f"{epoch + 1}/{self.num_epochs}"
+            ),
+        )
+
+        for batch_idx, batch in enumerate(progress):
+
+            batch = self._move_batch(batch)
+
+            with torch.autocast(
+                device_type=self.device_type,
+                dtype=self.amp_dtype,
+                enabled=self.use_amp,
+            ):
+
+                output = self.model.compute_loss(
+                    batch
+                )
+
+            
+
+                if isinstance(output, tuple):
+
+                    loss, metrics = output
+
+                else:
+
+                    loss = output
+                    metrics = {}
+
+                loss_for_backward = (
+                    loss
+                    / self.grad_accumulation_steps
+                )
+
+            # ======================================================
+            # BACKWARD
+            # ======================================================
+
+            if self.scaler is not None:
+
+                self.scaler.scale(
+                    loss_for_backward
+                ).backward()
+
+            else:
+
+                loss_for_backward.backward()
+
+            total_loss += loss.detach().item()
+            num_batches += 1
+
+            # ======================================================
+            # ACCUMULATION
+            # ======================================================
+
+            should_step = (
+                (batch_idx + 1)
+                % self.grad_accumulation_steps
+                == 0
+            )
+
+            is_last_batch = (
+                batch_idx + 1
+                == len(self.train_loader)
+            )
+
+            if should_step or is_last_batch:
+
+                self._optimizer_step()
+
+                self.global_step += 1
+
+                # ==================================================
+                # LOGGING
+                # ==================================================
+
+                log_data = {
+                    "train/loss": (
+                        loss.detach().item()
+                    ),
+                    "train/lr": (
+                        self._get_learning_rate()
+                    ),
+                }
+
+                for name, value in metrics.items():
+
+                    if torch.is_tensor(value):
+
+                        value = (
+                            value.detach()
+                            .float()
+                            .mean()
+                            .item()
+                        )
+
+                    elif isinstance(
+                        value,
+                        (int, float),
+                    ):
+
+                        value = float(value)
+
+                    else:
+
+                        continue
+
+                    log_data[
+                        f"train/{name}"
+                    ] = value
+
+                if self.logger is not None:
+
+                    self.logger.log(
+                        self.global_step,
+                        log_data,
+                    )
+
+                progress.set_postfix(
+                    loss=(
+                        f"{loss.detach().item():.4f}"
+                    )
+                )
+
+        epoch_loss = (
+            total_loss
+            / max(num_batches, 1)
+        )
+
+        return epoch_loss
+
+    # ==============================================================
+    # OPTIMIZER STEP
+    # ==============================================================
+
+    def _optimizer_step(self):
+
+        # ----------------------------------------------------------
+        # Gradient clipping
+        # ----------------------------------------------------------
+
+        if self.max_grad_norm is not None:
+
+            # FP16 gradients are scaled.
+            # Unscale before clipping.
+            if self.scaler is not None:
+
+                for optimizer in (
+                    self.optimizers.values()
+                ):
+
+                    self.scaler.unscale_(
+                        optimizer
+                    )
+
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                self.max_grad_norm,
+            )
+
+        # ----------------------------------------------------------
+        # Optimizers
+        # ----------------------------------------------------------
+
+        for optimizer in (
+            self.optimizers.values()
+        ):
+
+            if self.scaler is not None:
+
+                self.scaler.step(
+                    optimizer
+                )
+
+            else:
+
+                optimizer.step()
+
+       
+        if self.scaler is not None:
+
+            self.scaler.update()
+
+       
+        self._zero_grad()
+
+        
+        for scheduler in (
+            self.schedulers.values()
+        ):
+
+            scheduler.step()
+
+    # ==============================================================
+    # VALIDATION
+    # ==============================================================
+
+    @torch.no_grad()
+    def validate(self, epoch):
+
+        if self.val_loader is None:
+
+            return {}
+
+        self.model.eval()
+
+        total_loss = 0.0
+        num_batches = 0
+
+        metrics_sum = {}
+
+        progress = tqdm(
+            self.val_loader,
+            desc=(
+                f"Validation "
+                f"{epoch + 1}/{self.num_epochs}"
+            ),
+        )
+
+        for batch in progress:
+
+            batch = self._move_batch(batch)
+
+            with torch.autocast(
+                device_type=self.device_type,
+                dtype=self.amp_dtype,
+                enabled=self.use_amp,
+            ):
+
+                output = (
+                    self.model.validation_step(
+                        batch
+                    )
+                )
+
+                if isinstance(output, tuple):
+
+                    loss, metrics = output
+
+                else:
+
+                    loss = output
+                    metrics = {}
+
+            total_loss += (
+                loss.detach().item()
+            )
+
+            num_batches += 1
+
+            for name, value in metrics.items():
+
+                if torch.is_tensor(value):
+
+                    value = (
+                        value.detach()
+                        .float()
+                        .mean()
+                        .item()
+                    )
+
+                if name not in metrics_sum:
+
+                    metrics_sum[name] = 0.0
+
+                metrics_sum[name] += value
+
+        val_loss = (
+            total_loss
+            / max(num_batches, 1)
+        )
+
+        metrics = {
+            "val/loss": val_loss
+        }
+
+        for name, value in metrics_sum.items():
+
+            metrics[
+                f"val/{name}"
+            ] = (
+                value
+                / max(num_batches, 1)
+            )
+
+        return metrics
+
+    # ==============================================================
+    # FIT
+    # ==============================================================
+
+    def fit(self):
+
+        for epoch in range(
+            self.start_epoch,
+            self.num_epochs,
+        ):
+
+            # ======================================================
+            # TRAIN
+            # ======================================================
+
+            train_loss = (
+                self.train_epoch(epoch)
+            )
+
+            epoch_metrics = {
+                "epoch": epoch + 1,
+                "train/epoch_loss": train_loss,
+            }
+
+            # ======================================================
+            # VALIDATION
+            # ======================================================
+
+            if (
+                self.val_loader is not None
+                and (
+                    (epoch + 1)
+                    % self.val_every
+                    == 0
+                )
+            ):
+
+                val_metrics = (
+                    self.validate(epoch)
+                )
+
+                epoch_metrics.update(
+                    val_metrics
+                )
+
+            # ======================================================
+            # LOG EPOCH
+            # ======================================================
+
+            if self.logger is not None:
+
+                self.logger.log(
+                    self.global_step,
+                    epoch_metrics,
+                )
+
+            print(
+                f"Epoch {epoch + 1}/"
+                f"{self.num_epochs} "
+                f"- train loss: "
+                f"{train_loss:.6f}"
+            )
+
+            if "val/loss" in epoch_metrics:
+
+                print(
+                    f"  val loss: "
+                    f"{epoch_metrics['val/loss']:.6f}"
+                )
+
+            # ======================================================
+            # CHECKPOINT
+            # ======================================================
+
+            if (
+                self.checkpoint_manager is not None
+                and (
+                    (epoch + 1)
+                    % self.save_every
+                    == 0
+                )
+            ):
+
+                self.checkpoint_manager.save(
+                    model=self.model,
+                    optimizers=self.optimizers,
+                    schedulers=self.schedulers,
+                    scaler=self.scaler,
+                    epoch=epoch + 1,
+                    global_step=self.global_step,
+                    metrics=epoch_metrics,
+                )
+
+            self.history.append(
+                epoch_metrics
+            )
+
+        return self.history
+
+    # ==============================================================
+    # LEARNING RATE
+    # ==============================================================
+
+    def _get_learning_rate(self):
+
+        if not self.optimizers:
+
+            return 0.0
+
+        optimizer = next(
+            iter(
+                self.optimizers.values()
+            )
+        )
+
+        return optimizer.param_groups[0][
+            "lr"
+        ]
+
+    # ==============================================================
+    # ZERO GRADIENTS
+    # ==============================================================
+
+    def _zero_grad(self):
+
+        for optimizer in (
+            self.optimizers.values()
+        ):
+
+            optimizer.zero_grad(
+                set_to_none=True
+            )
+
+    def _move_batch(self, batch):
+
+        if torch.is_tensor(batch):
+
+            return batch.to(
+                self.device,
+                non_blocking=True,
+            )
+
+        if isinstance(batch, dict):
+
+            return {
+                key: self._move_batch(value)
+                for key, value in batch.items()
+            }
+
+        if isinstance(batch, (list, tuple)):
+
+            return type(batch)(
+                self._move_batch(value)
+                for value in batch
+            )
+
+        return batch
+
+    # ==============================================================
+    # LOAD CHECKPOINT
+    # ==============================================================
+
+    def load_checkpoint(self, path):
+
+        checkpoint = (
+            self.checkpoint_manager.load(
+                path,
+                model=self.model,
+                optimizers=self.optimizers,
+                schedulers=self.schedulers,
+                scaler=self.scaler,
+            )
+        )
+
+        self.start_epoch = checkpoint.get(
+            "epoch",
+            0,
+        )
+
+        self.global_step = checkpoint.get(
+            "global_step",
+            0,
+        )
+
+        self.history = checkpoint.get(
+            "history",
+            [],
+        )
+
+        print(
+            f"Resumed from epoch "
+            f"{self.start_epoch}, "
+            f"step "
+            f"{self.global_step}"
+        )

@@ -5,13 +5,17 @@ from einops import rearrange
 
 def generate_causal_mask(
     num_frames: int,
-    num_patches: int,
+    num_tokens_per_frame: int,
     device=None,
 ):
     """
     Create a spatio-temporal causal attention mask.
 
-    Each frame contains `num_patches` visual tokens.
+    Each frame contributes `num_tokens_per_frame` tokens to the sequence.
+    In DINO-WM this is (num_visual_patches + 1), where the extra token
+    is the action embedding appended to that frame's visual tokens by
+    DINOWM.predict(). This function itself doesn't care what the tokens
+    represent — it only needs the per-frame token count to build blocks.
 
     A token from frame t can attend to:
         - all tokens from frames <= t
@@ -20,8 +24,8 @@ def generate_causal_mask(
         - tokens from future frames > t
 
     Returns:
-        mask: (1, 1, num_frames * num_patches,
-                    num_frames * num_patches)
+        mask: (1, 1, num_frames * num_tokens_per_frame,
+                    num_frames * num_tokens_per_frame)
     """
 
     # Frame-level causal mask.
@@ -40,25 +44,25 @@ def generate_causal_mask(
     )
 
     # Expand every frame-level entry into a
-    # num_patches x num_patches block.
+    # num_tokens_per_frame x num_tokens_per_frame block.
     #
     # Result:
     #
-    # (num_frames * num_patches,
-    #  num_frames * num_patches)
+    # (num_frames * num_tokens_per_frame,
+    #  num_frames * num_tokens_per_frame)
     mask = frame_mask.repeat_interleave(
-        num_patches,
+        num_tokens_per_frame,
         dim=0,
     ).repeat_interleave(
-        num_patches,
+        num_tokens_per_frame,
         dim=1,
     )
 
     # Add batch and attention-head dimensions.
     #
-    # (T*P, T*P)
+    # (T*N, T*N)
     #
-    # -> (1, 1, T*P, T*P)
+    # -> (1, 1, T*N, T*N)
     return mask.unsqueeze(0).unsqueeze(0)
 
 
@@ -99,8 +103,13 @@ class Attention(nn.Module):
         x: (B, N, D)
 
     where:
-        N = num_frames * num_patches
+        N = num_frames * num_tokens_per_frame
         D = embedding dimension
+
+    num_tokens_per_frame = num_visual_patches + 1 (action token),
+    as assembled by DINOWM.predict() before this module ever sees the
+    sequence. This module is agnostic to that fact — it just needs the
+    count to build the correctly-shaped causal mask.
     """
 
     def __init__(
@@ -152,7 +161,7 @@ class Attention(nn.Module):
             "causal_mask",
             generate_causal_mask(
                 num_frames=num_frames,
-                num_patches=num_patches,
+                num_tokens_per_frame=num_patches,
             ),
             persistent=False,
         )
@@ -163,7 +172,7 @@ class Attention(nn.Module):
         #
         # (B, N, D)
         #
-        # N = T * P
+        # N = T * (P + 1)
 
         B, N, D = x.shape
 
@@ -337,29 +346,37 @@ class ViTPredictor(nn.Module):
     ViT-based latent predictor used in DINO-WM.
 
     Input:
-        x: (B, T * P, D)
+        x: (B, T * N, D)
 
     where:
         B = batch size
-        T = number of frames
-        P = number of patches/tokens per frame
-        D = encoder embedding dimension
+        T = number of frames in the window (num_hist + num_pred)
+        N = tokens per frame = num_visual_patches + 1
+            (the "+1" is the action token DINOWM.predict() concatenates
+            onto each frame's visual patch tokens before calling this
+            module — see DINOWM.predict())
+        D = shared embedding dimension (post feature_adapter, so it's
+            identical regardless of which frozen encoder — DINOv2,
+            DUNE, VGGT, ... — produced the visual tokens)
 
     Output:
-        x: (B, T * P, D)
+        x: (B, T * N, D)
 
-    The predictor operates entirely in latent space.
+    The predictor operates entirely in latent space and is unaware of
+    which token slots are "visual" vs. "action" — DINOWM is responsible
+    for slicing action-token outputs back out after calling this module.
 
     Example:
 
-        DINOv2 patch tokens:
-            (B, T, 256, 384)
+        DINOv2 patch tokens per frame: 256 (P) -> 257 (P+1) after
+        the action token is appended.
+
+        emb_dim = 384, T = num_hist + num_pred = 4
 
         Before predictor:
-            (B, T * 256, 384)
-
+            (B, 4 * 257, 384)
         After predictor:
-            (B, T * 256, 384)
+            (B, 4 * 257, 384)
     """
 
     def __init__(
@@ -377,6 +394,9 @@ class ViTPredictor(nn.Module):
     ):
         super().__init__()
 
+        # NOTE: `num_patches` here is P + 1 (visual patches + action
+        # token). Callers (see models/factory.py::build_model) must
+        # pass num_patches=P+1, not the raw encoder patch count.
         self.num_patches = num_patches
         self.num_frames = num_frames
         self.dim = dim
@@ -390,7 +410,7 @@ class ViTPredictor(nn.Module):
         #
         # Shape:
         #
-        # (1, T*P, D)
+        # (1, T*N, D)
         self.pos_embedding = nn.Parameter(
             torch.randn(
                 1,
@@ -415,50 +435,32 @@ class ViTPredictor(nn.Module):
         )
 
     def forward(self, x):
-        """
-        Args:
-            x:
-                (B, T*P, D)
-
-        Returns:
-            (B, T*P, D)
-        """
-
         B, N, D = x.shape
-
-        expected_tokens = (
-            self.num_frames *
-            self.num_patches
-        )
-
-        # Make sure the input matches the predictor
-        # configuration.
-        if N != expected_tokens:
-            raise ValueError(
-                f"ViTPredictor expected "
-                f"{expected_tokens} tokens "
-                f"({self.num_frames} frames x "
-                f"{self.num_patches} patches), "
-                f"but received {N}."
-            )
 
         if D != self.dim:
             raise ValueError(
-                f"ViTPredictor expected embedding "
-                f"dimension {self.dim}, "
+                f"ViTPredictor expected embedding dimension {self.dim}, "
                 f"but received {D}."
             )
 
-        # Add learned positional embeddings.
-        x = (
-            x
-            + self.pos_embedding[:, :N]
-        )
+        max_tokens = self.num_frames * self.num_patches
 
-        # Embedding dropout.
+        if N > max_tokens:
+            raise ValueError(
+                f"ViTPredictor received {N} tokens, which exceeds the "
+                f"maximum window it was built for "
+                f"({self.num_frames} frames x {self.num_patches} tokens/frame "
+                f"= {max_tokens})."
+            )
+
+        if N % self.num_patches != 0:
+            raise ValueError(
+                f"ViTPredictor received {N} tokens, which is not a whole "
+                f"number of frames (tokens/frame = {self.num_patches})."
+            )
+
+        x = x + self.pos_embedding[:, :N]
         x = self.dropout(x)
-
-        # Transformer predictor.
         x = self.transformer(x)
 
         return x

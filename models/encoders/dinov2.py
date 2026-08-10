@@ -12,7 +12,7 @@ class FeatureAdapter(nn.Module):
     Output:
         [B, N, D_out]
     """
-
+ 
     def __init__(
         self,
         input_dim,
