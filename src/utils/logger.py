@@ -2,6 +2,8 @@ from pathlib import Path
 import csv
 import json
 
+import wandb
+
 
 class Logger:
 
@@ -85,3 +87,26 @@ class Logger:
                 f,
                 indent=4,
             )
+
+
+class WandbLogger:
+    def __init__(self, project, name=None, config=None):
+        wandb.init(project=project, name=name, config=config)
+
+    def log(self, step, metrics):
+        clean = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
+        wandb.log(clean, step=step)
+
+
+class CombinedLogger:
+    def __init__(self, loggers):
+        self.loggers = loggers
+
+    def log(self, step, metrics):
+        for logger in self.loggers:
+            logger.log(step, metrics)
+
+    def save_config(self, config):
+        for logger in self.loggers:
+            if hasattr(logger, "save_config"):
+                logger.save_config(config)

@@ -1,6 +1,7 @@
 
 import torch
 from tqdm import tqdm
+import time
 
 
 class Trainer:
@@ -44,8 +45,6 @@ class Trainer:
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
-        device_type=self.device.type,
-
         self.optimizers = optimizers or {}
         self.schedulers = schedulers or {}
 
@@ -53,6 +52,7 @@ class Trainer:
         self.checkpoint_manager = checkpoint_manager
 
         self.config = config or {}
+        
 
         # ==========================================================
         # TRAINING CONFIG
@@ -60,85 +60,35 @@ class Trainer:
 
         training_cfg = self.config.get("training", {})
 
-        self.num_epochs = training_cfg.get(
-            "epochs",1)
-
-        self.device = training_cfg.get(
-            "device",
-            "cuda" if torch.cuda.is_available() else "cpu",
-        )
-
-        self.precision = training_cfg.get(
-            "precision",
-            "fp32",
-        )
-
-        self.grad_accumulation_steps = training_cfg.get(
-            "grad_accumulation_steps",
-            1,
-        )
-
-        self.max_grad_norm = training_cfg.get(
-            "max_grad_norm",
-            None,
-        )
-
-        self.val_every = training_cfg.get(
-            "val_every",
-            1,
-        )
-
-        self.save_every = training_cfg.get(
-            "save_every",
-            1,
-        )
-        self.log_every = training_cfg.get(
-                    "log_every",
-                    1,
-                )
+        self.num_epochs = training_cfg.get("epochs", 1)
+        self.precision = training_cfg.get("precision", "fp32")
+        self.grad_accumulation_steps = training_cfg.get("grad_accumulation_steps", 1)
+        self.max_grad_norm = training_cfg.get("max_grad_norm", None)
+        self.val_every = training_cfg.get("val_every", 1)
+        self.save_every = training_cfg.get("save_every", 1)
+        self.log_every = training_cfg.get("log_every", 1)
         self.warmup_steps = training_cfg.get("warmup_steps")
-        self.batch = training_cfg.get("batch")
-         
+        self.steps_per_epoch = training_cfg.get("steps_per_epoch",None,)
 
 
         # DEVICE
         self.device = torch.device(
-            training_cfg.get(
-                "device",
-                "cuda" if torch.cuda.is_available() else "cpu",
-            )
-        )
+        training_cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+    )
+        self.device_type = self.device.type
 
-        self.use_amp = (
-            self.device.type == "cuda"
-            and self.precision != "fp32"
-        )
+        self.use_amp = self.device.type == "cuda" and self.precision != "fp32"
 
         if self.precision == "bf16":
-
             self.amp_dtype = torch.bfloat16
-
         elif self.precision == "fp16":
-
             self.amp_dtype = torch.float16
-
         else:
-
             self.amp_dtype = torch.float32
 
-        # GradScaler is useful for FP16.
-        # BF16 normally does not need it.
-        if (
-            self.precision == "fp16"
-            and self.use_amp
-        ):
-
-            self.scaler = torch.amp.GradScaler(
-                "cuda"
-            )
-
+        if self.precision == "fp16" and self.use_amp:
+            self.scaler = torch.amp.GradScaler("cuda")
         else:
-
             self.scaler = None
 
         # ==========================================================
@@ -153,7 +103,28 @@ class Trainer:
     # ==============================================================
     # TRAIN ONE EPOCH
     # ==============================================================
+   
+    def prepare_batch(self,raw_batch):
+        """
+        raw_batch:
+        frames:  [B, T, C, H, W]
+        actions: [B, T-1, A]
 
+        returns:
+        observations: [B, T, C, H, W]
+        actions:      [B, T, A]        (last row is a zero pad, unused in loss)
+        """
+        frames = raw_batch["frames"]
+        actions = raw_batch["actions"]
+
+        B, T_minus_1, A = actions.shape
+        pad = torch.zeros(B, 1, A, dtype=actions.dtype, device=actions.device)
+        actions_padded = torch.cat([actions, pad], dim=1)   # [B, T, A]
+
+        return {
+            "observations": frames,
+            "actions": actions_padded,
+        }
     def train_epoch(self, epoch):
 
         self.model.train()
@@ -174,6 +145,7 @@ class Trainer:
         for batch_idx, batch in enumerate(progress):
 
             batch = self._move_batch(batch)
+            batch = self.prepare_batch(batch)
 
             with torch.autocast(
                 device_type=self.device_type,
@@ -229,9 +201,9 @@ class Trainer:
             )
 
             is_last_batch = (
-                batch_idx + 1
-                == len(self.train_loader)
-            )
+            self.steps_per_epoch is not None
+            and batch_idx + 1 >= self.steps_per_epoch
+        )
 
             if should_step or is_last_batch:
 
@@ -290,6 +262,11 @@ class Trainer:
                         f"{loss.detach().item():.4f}"
                     )
                 )
+            if (
+                self.steps_per_epoch is not None
+                and batch_idx + 1 >= self.steps_per_epoch
+            ):
+                break
 
         epoch_loss = (
             total_loss
@@ -459,23 +436,28 @@ class Trainer:
     # ==============================================================
 
     def fit(self):
+        total_start = time.time()
 
         for epoch in range(
             self.start_epoch,
             self.num_epochs,
         ):
 
-            # ======================================================
-            # TRAIN
-            # ======================================================
+            
+            epoch_start = time.time()
 
             train_loss = (
                 self.train_epoch(epoch)
             )
+            epoch_time = time.time() - epoch_start
+            total_time = time.time() - total_start
+            
 
             epoch_metrics = {
                 "epoch": epoch + 1,
                 "train/epoch_loss": train_loss,
+                "time/epoch_seconds": epoch_time,
+                "time/total_seconds": total_time,
             }
 
             # ======================================================
@@ -515,6 +497,7 @@ class Trainer:
                 f"{self.num_epochs} "
                 f"- train loss: "
                 f"{train_loss:.6f}"
+                f"- time: {epoch_time:.2f}s"
             )
 
             if "val/loss" in epoch_metrics:
@@ -524,32 +507,35 @@ class Trainer:
                     f"{epoch_metrics['val/loss']:.6f}"
                 )
 
-            # ======================================================
-            # CHECKPOINT
-            # ======================================================
+           
 
             if (
-                self.checkpoint_manager is not None
-                and (
-                    (epoch + 1)
-                    % self.save_every
-                    == 0
-                )
-            ):
+            self.checkpoint_manager is not None
+            and ((epoch + 1) % self.save_every == 0)
+        ):
+                main_optimizer = next(iter(self.optimizers.values()), None)
+                main_scheduler = next(iter(self.schedulers.values()), None)
 
                 self.checkpoint_manager.save(
                     model=self.model,
-                    optimizers=self.optimizers,
-                    schedulers=self.schedulers,
-                    scaler=self.scaler,
+                    optimizer=main_optimizer,   
+                    scheduler=main_scheduler,
                     epoch=epoch + 1,
-                    global_step=self.global_step,
-                    metrics=epoch_metrics,
+                    step=self.global_step,
+                    loss=epoch_metrics.get("train/epoch_loss"),
+                    scaler=self.scaler,
+                    config=self.config,
+                    name="latest.pt",   # optional: unique filename per epoch, see note below
                 )
 
             self.history.append(
                 epoch_metrics
             )
+        total_time = time.time() - total_start
+        print(
+    f"Training completed in "
+    f"{total_time / 60:.2f} minutes"
+)
 
         return self.history
 

@@ -2,12 +2,21 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# ImageNet stats DINOv2 was pretrained with. Applied here so the decoder
+# is trained on the SAME token distribution your DINO-WM predictor sees.
+# If your DINO-WM pipeline feeds raw [0,1] images to this encoder WITHOUT
+# normalization, remove this and pass images through unnormalized instead
+# -- the two must match.
+IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+
+
 class DINOv2Encoder(nn.Module):
     """
     Frozen pretrained DINOv2 encoder.
 
     Input:
-        images: [B, 3, H, W]
+        images: [B, 3, H, W], values in [0, 1]
 
     Output:
         patch_tokens: [B, N, D]
@@ -17,6 +26,7 @@ class DINOv2Encoder(nn.Module):
         self,
         model_name="dinov2_vits14",
         freeze=True,
+        normalize=True,
     ):
         super().__init__()
 
@@ -27,6 +37,7 @@ class DINOv2Encoder(nn.Module):
         )
 
         self.embed_dim = self.model.embed_dim
+        self.normalize = normalize
 
         if freeze:
             self.freeze()
@@ -44,11 +55,10 @@ class DINOv2Encoder(nn.Module):
         Extract DINOv2 spatial patch tokens.
 
         Args:
-            images: [B, 3, H, W]
+            images: [B, 3, H, W], values in [0, 1]
 
         Returns:
             patch_tokens: [B, N, D]
-
         """
         images = F.interpolate(
             images,
@@ -56,6 +66,11 @@ class DINOv2Encoder(nn.Module):
             mode="bilinear",
             align_corners=False,
         )
+
+        if self.normalize:
+            mean = IMAGENET_MEAN.to(images.device)
+            std = IMAGENET_STD.to(images.device)
+            images = (images - mean) / std
 
         features = self.model.forward_features(images)
 

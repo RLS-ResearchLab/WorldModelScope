@@ -3,11 +3,11 @@ from src.utils.config import load_config
 
 from models.world_models.factory import build_model
 
-from data.dataloader import build_dataloader
+from datasets.dataloader import build_dataloader
 
-from src.utils.optimizer import build_optimizers
-from src.utils.scheduler import build_schedulers
-from src.utils.logger import build_logger
+from src.utils.optimizer import build_optimizer
+from src.utils.scheduler import build_scheduler
+from src.utils.logger import Logger, WandbLogger, CombinedLogger
 from src.utils.checkpoints import CheckpointManager
 
 from train import Trainer
@@ -21,22 +21,34 @@ def main(config_path):
 
     train_loader = build_dataloader(config)
 
-    optimizers = build_optimizers(
+    optimizer = build_optimizer(
         model,
         config["optimizer"],
     )
-
-    schedulers = build_schedulers(
-        optimizers,
+    optimizers = {
+    "main": optimizer,
+    }
+  
+    scheduler = build_scheduler(
+        optimizer,
         config["scheduler"],
+        config["training"]["epochs"] * config["training"]["steps_per_epoch"]
     )
+    schedulers = {
+    "main": scheduler,
+    }
 
-    logger = build_logger(
-        config["logging"],
-    )
+    logger = CombinedLogger([
+        Logger(config["logging"]["output_dir"]),
+        WandbLogger(
+            project="dino-wm-bridge",
+            name=None,
+            config=config,
+        ),
+    ])
 
     checkpoint = CheckpointManager(
-        config["checkpoint"],
+        config["checkpoint"]["dir"],
     )
 
     trainer = Trainer(

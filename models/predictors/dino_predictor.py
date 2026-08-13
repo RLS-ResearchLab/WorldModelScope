@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from einops import rearrange
-
+import torch.nn.functional as F
 
 def generate_causal_mask(
     num_frames: int,
@@ -127,67 +127,22 @@ class Attention(nn.Module):
 
     def forward(self, x):
         B, N, D = x.shape
-
         x = self.norm(x)
 
+        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
+        q = rearrange(q, "b n (h d) -> b h n d", h=self.heads)
+        k = rearrange(k, "b n (h d) -> b h n d", h=self.heads)
+        v = rearrange(v, "b n (h d) -> b h n d", h=self.heads)
 
-        q, k, v = self.to_qkv(x).chunk(
-            3,
-            dim=-1,
+        mask = self.causal_mask[..., :N, :N].bool()  # SDPA wants bool: True = keep
+
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=mask,
+            dropout_p=self.dropout.p if self.training else 0.0,
         )
 
-        q = rearrange(
-            q,
-            "b n (h d) -> b h n d",
-            h=self.heads,
-        )
-
-        k = rearrange(
-            k,
-            "b n (h d) -> b h n d",
-            h=self.heads,
-        )
-
-        v = rearrange(
-            v,
-            "b n (h d) -> b h n d",
-            h=self.heads,
-        )
-
-    
-        dots = torch.matmul(
-            q,
-            k.transpose(-1, -2),
-        ) * self.scale
-
-        # Make sure the mask has the correct size.
-        mask = self.causal_mask[
-            ...,
-            :N,
-            :N,
-        ]
-
-        dots = dots.masked_fill(
-            mask == 0,
-            torch.finfo(dots.dtype).min,
-        )
-
-     
-        attn = self.attend(dots)
-
-        attn = self.dropout(attn)
-
-        out = torch.matmul(
-            attn,
-            v,
-        )
-
-        out = rearrange(
-            out,
-            "b h n d -> b n (h d)",
-        )
-
-        # Final projection.
+        out = rearrange(out, "b h n d -> b n (h d)")
         return self.to_out(out)
 
 

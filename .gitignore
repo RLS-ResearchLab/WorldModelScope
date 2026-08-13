@@ -1,3 +1,36 @@
+# Virtual Environments
+.venv/
 venv/
+env/
+
+# Python Cache & Compiled Files
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Experiment Tracking (WandB, Tensorboard)
+wandb/
+*.wandb
+
+# Model Checkpoints & Weights
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+
+# Datasets & Temp Files
+raw/
+datasets/_temp/
+
+# Model Outputs & Logs
+outputs/
+*.log
+
+# Editor & IDE Configs
+.vscode/
+.idea/
+.DS_Store

@@ -66,14 +66,14 @@ class DINOWM(nn.Module):
     ):
 
 
-        B, T = actions.shape[:2]
+        """B, T = actions.shape[:2]
 
         actions_flat = actions.reshape(B * T,*actions.shape[2:],)
         action_features = (self.action_encoder(actions_flat))
     
-        action_features = (action_features.reshape(B,T,*action_features.shape[1:],))
+        action_features = (action_features.reshape(B,T,*action_features.shape[1:],))"""
         
-        return action_features
+        return  self.action_encoder(actions)
 
     
 
@@ -93,6 +93,24 @@ class DINOWM(nn.Module):
 
        
         return out[:, :, :P, :]
+
+    def compute_prediction_loss(self, predicted, target):
+        if self.normalize_targets:
+            target = F.normalize(target, dim=-1)
+            predicted = F.normalize(predicted, dim=-1)
+
+        if self.loss_type == "mse":
+            loss = F.mse_loss(predicted, target)
+        elif self.loss_type == "l1":
+            loss = F.l1_loss(predicted, target)
+        elif self.loss_type == "cosine":
+            # 1 - cosine similarity, averaged over all tokens
+            cos_sim = F.cosine_similarity(predicted, target, dim=-1)
+            loss = (1 - cos_sim).mean()
+        else:
+            raise ValueError(f"Unknown loss_type: {self.loss_type}")
+
+        return loss
 
    
 
