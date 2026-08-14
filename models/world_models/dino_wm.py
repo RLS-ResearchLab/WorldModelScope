@@ -25,8 +25,8 @@ class DINOWM(nn.Module):
         self.predictor = predictor
         self.feature_adapter = feature_adapter
 
-        self.num_hist = num_hist
-        self.num_pred = num_pred
+        self.num_hist = num_hist #H
+        self.num_pred = num_pred  
         self.loss_type = loss_type
         self.normalize_targets = normalize_targets
         self.encoder_trainable = encoder_trainable
@@ -78,20 +78,98 @@ class DINOWM(nn.Module):
     
 
     def predict(self, context, actions):
-     
-        B, T, P, D = context.shape
+        """
+        Predict the next latent for every frame in the context.
 
-        action_tokens = self.encode_actions(actions)        # (B, T, D)
-        action_tokens = action_tokens.unsqueeze(2)           # (B, T, 1, D)
+        context:
+            (B, H, P, D)
 
-        # Append action token to that frame's patch tokens.
-        tokens = torch.cat([context, action_tokens], dim=2)  # (B, T, P+1, D)
-        tokens = tokens.reshape(B, T * (P + 1), D)
+        actions:
+            (B, H, A)
 
-        out = self.predictor(tokens)                         # (B, T*(P+1), D)
-        out = out.reshape(B, T, P + 1, D)
+        Returns:
+            predictions:
+                (B, H, P, D)
 
-       
+        Interpretation for H=3:
+
+            input frame 0 + action 0 -> prediction of frame 1
+            input frame 1 + action 1 -> prediction of frame 2
+            input frame 2 + action 2 -> prediction of frame 3
+
+        Because the transformer is causally masked, the output
+        at frame t can use frames <= t.
+        """
+
+        B, H, P, D = context.shape
+
+        if actions.shape[1] != H:
+            raise ValueError(
+                f"Expected {H} actions, "
+                f"but received {actions.shape[1]}."
+            )
+
+        # Encode every action into the predictor dimension.
+        #
+        # (B, H, action_dim)
+        #        ↓
+        # (B, H, D)
+        action_tokens = self.encode_actions(actions)
+
+        # Convert:
+        #
+        # (B, H, D)
+        #
+        # into:
+        #
+        # (B, H, 1, D)
+        #
+        # because every action becomes one token.
+        action_tokens = action_tokens.unsqueeze(2)
+
+        # Append one action token to each frame.
+        #
+        # Before:
+        #
+        # frame = [patch1 ... patchP]
+        #
+        # After:
+        #
+        # frame = [patch1 ... patchP action]
+        tokens = torch.cat(
+            [context, action_tokens],
+            dim=2,
+        )
+
+        # Flatten temporal + spatial dimensions.
+        #
+        # (B, H, P+1, D)
+        #        ↓
+        # (B, H*(P+1), D)
+        tokens = tokens.reshape(
+            B,
+            H * (P + 1),
+            D,
+        )
+
+        # Causal transformer.
+        out = self.predictor(tokens)
+
+        # Restore frame structure.
+        #
+        # (B, H*(P+1), D)
+        #        ↓
+        # (B, H, P+1, D)
+        out = out.reshape(
+            B,
+            H,
+            P + 1,
+            D,
+        )
+
+        # Remove the action-token output.
+        #
+        # We only want predicted visual/DINO tokens.
         return out[:, :, :P, :]
 
     def compute_prediction_loss(self, predicted, target):
@@ -115,27 +193,125 @@ class DINOWM(nn.Module):
    
 
     def compute_loss(self, batch):
-        observations = batch["observations"]  # (B, T, C, H, W)
-        actions = batch["actions"]            # (B, T, A)
 
-        T_total = self.num_hist + self.num_pred
-        assert observations.shape[1] == T_total, (
-            f"Expected {T_total} frames (num_hist+num_pred), got {observations.shape[1]}"
+        observations = batch["observations"]
+        actions = batch["actions"]
+
+        # --------------------------------------------------
+        # Expected BridgeV2 training sample
+        # --------------------------------------------------
+        #
+        # H = 3
+        #
+        # observations:
+        #
+        # I0 I1 I2 I3
+        #
+        # actions:
+        #
+        # a0 a1 a2
+        #
+        # Therefore:
+        #
+        # observations.shape[1] = H + 1
+        # actions.shape[1]      = H
+        # --------------------------------------------------
+
+        B, T, C, H_img, W_img = observations.shape
+
+        if T != self.num_hist + 1:
+            raise ValueError(
+                f"Expected {self.num_hist + 1} observations "
+                f"for H={self.num_hist}, "
+                f"but received {T}."
+            )
+
+        if actions.shape[1] != self.num_hist:
+            raise ValueError(
+                f"Expected {self.num_hist} actions, "
+                f"but received {actions.shape[1]}."
+            )
+
+        # --------------------------------------------------
+        # Encode all observations.
+        # --------------------------------------------------
+        #
+        # I0 I1 I2 I3
+        #
+        #       ↓ DINOv2
+        #
+        # z0 z1 z2 z3
+        #
+        z = self.encode_observations(observations)
+
+        # z shape:
+        #
+        # (B, H+1, P, D)
+
+        # --------------------------------------------------
+        # The predictor only receives the first H states.
+        # --------------------------------------------------
+        #
+        # z0 z1 z2
+        #
+        # together with:
+        #
+        # a0 a1 a2
+        #
+        context = z[:, :-1]
+
+        # --------------------------------------------------
+        # Teacher-forced predictions.
+        # --------------------------------------------------
+        #
+        # Predictor receives:
+        #
+        # (z0,a0)
+        # (z1,a1)
+        # (z2,a2)
+        #
+        # and produces:
+        #
+        # z_hat1
+        # z_hat2
+        # z_hat3
+        #
+        predicted = self.predict(
+            context=context,
+            actions=actions,
         )
 
-        z = self.encode_observations(observations)          # (B, T, P, D)
-        predicted = self.predict(context=z, actions=actions) # (B, T, P, D)
-
-       
-        predicted = predicted[:, :-1]
+        # --------------------------------------------------
+        # Ground-truth next states.
+        # --------------------------------------------------
+        #
+        # z1 z2 z3
+        #
         target = z[:, 1:]
 
-        
-        predicted = predicted[:, self.num_hist - 1:]
-        target = target[:, self.num_hist - 1:]
+        # Both tensors must now have exactly the same shape:
+        #
+        # predicted: (B, H, P, D)
+        # target:    (B, H, P, D)
 
-        loss = self.compute_prediction_loss(predicted, target)
-        return loss, {"prediction_loss": loss.detach()}
+        if predicted.shape != target.shape:
+            raise ValueError(
+                f"Prediction shape {predicted.shape} "
+                f"does not match target shape {target.shape}."
+            )
+
+        # --------------------------------------------------
+        # Average loss over all H predictions.
+        # --------------------------------------------------
+
+        loss = self.compute_prediction_loss(
+            predicted,
+            target,
+        )
+
+        return loss, {
+            "prediction_loss": loss.detach(),
+        }
 
 
     @torch.no_grad()

@@ -62,7 +62,7 @@ def build_dino_wm(config):
 
     predictor = ViTPredictor(
         num_patches=num_patches + 1,
-        num_frames=num_hist + num_pred,
+        num_frames=num_hist,
         dim=emb_dim,
         depth=model_cfg["predictor"]["depth"],
         heads=model_cfg["predictor"]["heads"],

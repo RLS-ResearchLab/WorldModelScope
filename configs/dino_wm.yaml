@@ -1,10 +1,12 @@
 model:
   name: dino_wm
   image_size: 256
-  action_dim: 7          
+  action_dim: 10
   num_hist: 3
-  num_pred: 1
   loss_type: mse
+  # BridgeV2 sampling
+  source_fps: 5.0
+  target_fps: 4.0
   normalize_targets: false
   encoder_trainable: false
   encoder:
@@ -12,9 +14,9 @@ model:
    
   predictor:
     dim: 384              
-    depth: 6
+    depth: 16
     heads: 6
-    mlp_dim: 1536
+    mlp_dim: 2048
     dim_head: 64
     dropout: 0.0
     emb_dropout: 0.0
