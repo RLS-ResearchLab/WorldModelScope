@@ -1,0 +1,63 @@
+experiment:
+  output_dir: outputs/decoder_dinov2
+encoder:
+  name: dinov2         
+  variant: dinov2_vits14
+
+
+model:
+  latent_dim: 384
+  num_patches: 256
+  img_size: 256
+  patch_size: 16          
+  decoder_dim: 384
+  num_layers: 6
+  num_heads: 6
+  dim_head: 64
+  mlp_ratio: 4.0
+  out_channels: 3
+  dropout: 0.0
+  use_conv_refinement: true
+  refinement_hidden: 64
+  refinement_blocks: 3
+
+data:
+  name: bridge            
+  batch_size: 32
+  num_workers: 8
+  pin_memory: true
+  params:                
+    data_dir: /path/to/bridge
+    clip_len: 1
+    stride: 1
+    camera_key: image_0
+    source_fps: 5
+    target_fps: 5
+
+optimizer:
+  name: adamw
+  lr: 3.0e-4
+  weight_decay: 0.05
+  betas: [0.9, 0.999]
+
+scheduler:
+  name: cosine
+  min_lr: 1.0e-6
+
+training:
+  device: cuda
+  precision: bf16
+  epochs: 50
+  grad_accumulation_steps: 1
+  max_grad_norm: 1.0
+  val_every: 1
+  save_every: 5
+  log_every: 50
+  l1_weight: 0.1
+  keep_last_checkpoints: 3
+  resume_from: null
+  steps_per_epoch: 500    
+wandb:
+  enabled: false
+  project: dino-wm-decoder
+  name: decoder-dinov2-vits14
