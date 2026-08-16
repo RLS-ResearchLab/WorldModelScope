@@ -5,31 +5,6 @@ import time
 
 
 class Trainer:
-    """
-    Generic training engine shared by all world models.
-
-
-    It handles:
-        - epochs
-        - batches
-        - AMP
-        - FP16 GradScaler
-        - gradient accumulation
-        - gradient clipping
-        - optimizer steps
-        - scheduler steps
-        - logging
-        - validation
-        - checkpointing
-        - resume
-
-    Model-specific logic must be implemented by the model:
-
-        model.compute_loss(batch)
-
-        model.validation_step(batch)
-
-    """
 
     def __init__(
         self,
@@ -515,7 +490,7 @@ class Trainer:
                 main_optimizer = next(iter(self.optimizers.values()), None)
                 main_scheduler = next(iter(self.schedulers.values()), None)
 
-                self.checkpoint_manager.save(
+                latest_path  = self.checkpoint_manager.save(
                     model=self.model,
                     optimizers=self.optimizers,
                     schedulers=self.schedulers,
@@ -526,8 +501,11 @@ class Trainer:
                     config=self.config,
                     name="latest.pt",
                 )
+                # upload "latest" every epoch (cheap, always overwritten)
+                if self.logger is not None and hasattr(self.logger, "save_checkpoint"):
+                    self.logger.save_checkpoint(latest_path, name="latest-checkpoint")
                 if (epoch + 1) % self.save_every == 0:
-                    self.checkpoint_manager.save(
+                    epoch_path  = self.checkpoint_manager.save(
                         model=self.model,
                         optimizers=self.optimizers,
                         schedulers=self.schedulers,
@@ -538,6 +516,9 @@ class Trainer:
                         config=self.config,
                         name=f"epoch_{epoch + 1:04d}.pt",
                     )
+                # upload periodic checkpoints (versioned artifacts)
+                    if self.logger is not None and hasattr(self.logger, "save_checkpoint"):
+                        self.logger.save_checkpoint(epoch_path, name="epoch-checkpoint")
 
             self.history.append(
                 epoch_metrics

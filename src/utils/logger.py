@@ -96,6 +96,11 @@ class WandbLogger:
     def log(self, step, metrics):
         wandb.log(metrics, step=step)
 
+    def save_checkpoint(self, checkpoint_path, name="model-checkpoint"):
+        artifact = wandb.Artifact(name=name, type="model")
+        artifact.add_file(str(checkpoint_path))
+        self.run.log_artifact(artifact)
+
 
 class CombinedLogger:
     def __init__(self, loggers):
@@ -109,3 +114,8 @@ class CombinedLogger:
         for logger in self.loggers:
             if hasattr(logger, "save_config"):
                 logger.save_config(config)
+
+    def save_checkpoint(self, checkpoint_path, name="model-checkpoint"):
+        for logger in self.loggers:
+            if hasattr(logger, "save_checkpoint"):
+                logger.save_checkpoint(checkpoint_path, name=name)
