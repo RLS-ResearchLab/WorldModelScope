@@ -94,8 +94,7 @@ class WandbLogger:
         wandb.init(project=project, name=name, config=config)
 
     def log(self, step, metrics):
-        clean = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
-        wandb.log(clean, step=step)
+        wandb.log(metrics, step=step)
 
 
 class CombinedLogger:

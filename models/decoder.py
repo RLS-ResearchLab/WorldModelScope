@@ -1,79 +1,98 @@
-import torch
+"""import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# ImageNet stats DINOv2 was pretrained with. Applied here so the decoder
-# is trained on the SAME token distribution your DINO-WM predictor sees.
-# If your DINO-WM pipeline feeds raw [0,1] images to this encoder WITHOUT
-# normalization, remove this and pass images through unnormalized instead
-# -- the two must match.
-IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
-
-
-class DINOv2Encoder(nn.Module):
-    """
-    Frozen pretrained DINOv2 encoder.
-
-    Input:
-        images: [B, 3, H, W], values in [0, 1]
-
-    Output:
-        patch_tokens: [B, N, D]
-    """
-
+class DINODecoder(nn.Module):
     def __init__(
         self,
-        model_name="dinov2_vits14",
-        freeze=True,
-        normalize=True,
+        latent_dim,
+        img_size=224,
+        patch_size=14,
+        decoder_dim=512,
+        num_layers=6,
+        num_heads=8,
     ):
         super().__init__()
 
-        # Load pretrained DINOv2
-        self.model = torch.hub.load(
-            "facebookresearch/dinov2",
-            model_name,
+        self.img_size = img_size
+        self.patch_size = patch_size
+
+        self.num_patches = (img_size // patch_size) ** 2
+
+        self.input_proj = nn.Linear(
+            latent_dim,
+            decoder_dim
         )
 
-        self.embed_dim = self.model.embed_dim
-        self.normalize = normalize
-
-        if freeze:
-            self.freeze()
-
-    def freeze(self):
-        """Freeze all DINOv2 parameters."""
-        for param in self.model.parameters():
-            param.requires_grad = False
-
-        self.model.eval()
-
-    @torch.no_grad()
-    def forward(self, images):
-        """
-        Extract DINOv2 spatial patch tokens.
-
-        Args:
-            images: [B, 3, H, W], values in [0, 1]
-
-        Returns:
-            patch_tokens: [B, N, D]
-        """
-        images = F.interpolate(
-            images,
-            size=(224, 224),
-            mode="bilinear",
-            align_corners=False,
+        self.pos_embed = nn.Parameter(
+            torch.zeros(
+                1,
+                self.num_patches,
+                decoder_dim
+            )
         )
 
-        if self.normalize:
-            mean = IMAGENET_MEAN.to(images.device)
-            std = IMAGENET_STD.to(images.device)
-            images = (images - mean) / std
+        decoder_layer = nn.TransformerEncoderLayer(
+            d_model=decoder_dim,
+            nhead=num_heads,
+            batch_first=True,
+            norm_first=True,
+        )
 
-        features = self.model.forward_features(images)
+        self.transformer = nn.TransformerEncoder(
+            decoder_layer,
+            num_layers=num_layers,
+        )
 
-        patch_tokens = features["x_norm_patchtokens"]
+        self.output_head = nn.Sequential(
+            nn.LayerNorm(decoder_dim),
+            nn.Linear(
+                decoder_dim,
+                patch_size * patch_size * 3
+            ),
+            nn.Sigmoid(),
+        )
 
-        return patch_tokens
+    def forward(self, z):
+        """
+        z:
+            [B, N, latent_dim]
+
+        returns:
+            [B, 3, H, W]
+        """
+
+        x = self.input_proj(z)
+
+        x = x + self.pos_embed[:, :x.shape[1]]
+
+        x = self.transformer(x)
+
+        x = self.output_head(x)
+
+        B, N, D = x.shape
+
+        p = self.patch_size
+        H = W = self.img_size // p
+
+        x = x.reshape(
+            B,
+            H,
+            W,
+            p,
+            p,
+            3
+        )
+
+        x = x.permute(
+            0, 5, 1, 3, 2, 4
+        )
+
+        x = x.reshape(
+            B,
+            3,
+            self.img_size,
+            self.img_size
+        )
+
+        return x"""

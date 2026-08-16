@@ -511,22 +511,33 @@ class Trainer:
 
             if (
             self.checkpoint_manager is not None
-            and ((epoch + 1) % self.save_every == 0)
         ):
                 main_optimizer = next(iter(self.optimizers.values()), None)
                 main_scheduler = next(iter(self.schedulers.values()), None)
 
                 self.checkpoint_manager.save(
                     model=self.model,
-                    optimizer=main_optimizer,   
-                    scheduler=main_scheduler,
-                    epoch=epoch + 1,
-                    step=self.global_step,
-                    loss=epoch_metrics.get("train/epoch_loss"),
+                    optimizers=self.optimizers,
+                    schedulers=self.schedulers,
+                    epoch=epoch,
+                    global_step=self.global_step,
+                    loss=train_loss,
                     scaler=self.scaler,
                     config=self.config,
-                    name="latest.pt",   # optional: unique filename per epoch, see note below
+                    name="latest.pt",
                 )
+                if (epoch + 1) % self.save_every == 0:
+                    self.checkpoint_manager.save(
+                        model=self.model,
+                        optimizers=self.optimizers,
+                        schedulers=self.schedulers,
+                        epoch=epoch,
+                        global_step=self.global_step,
+                        loss=train_loss,
+                        scaler=self.scaler,
+                        config=self.config,
+                        name=f"epoch_{epoch + 1:04d}.pt",
+                    )
 
             self.history.append(
                 epoch_metrics
@@ -603,16 +614,38 @@ class Trainer:
     # ==============================================================
 
     def load_checkpoint(self, path):
+        """
+        Resume training from a checkpoint.
 
-        checkpoint = (
-            self.checkpoint_manager.load(
-                path,
-                model=self.model,
-                optimizers=self.optimizers,
-                schedulers=self.schedulers,
-                scaler=self.scaler,
+        Restores:
+            - model
+            - optimizers
+            - schedulers
+            - AMP scaler
+            - epoch
+            - global step
+            - loss
+            - training history
+        """
+
+        if self.checkpoint_manager is None:
+            raise RuntimeError(
+                "Cannot load checkpoint: "
+                "checkpoint_manager is None."
             )
+
+        checkpoint = self.checkpoint_manager.load(
+            path=path,
+            model=self.model,
+            optimizers=self.optimizers,
+            schedulers=self.schedulers,
+            scaler=self.scaler,
+            device=self.device,
         )
+
+        # ----------------------------------------------------------
+        # RESUME STATE
+        # ----------------------------------------------------------
 
         self.start_epoch = checkpoint.get(
             "epoch",
@@ -624,14 +657,28 @@ class Trainer:
             0,
         )
 
-        self.history = checkpoint.get(
-            "history",
-            [],
+        self.last_loss = checkpoint.get(
+            "loss",
+            None,
+        )
+
+        self.loaded_config = checkpoint.get(
+            "config",
+            None,
         )
 
         print(
-            f"Resumed from epoch "
-            f"{self.start_epoch}, "
-            f"step "
-            f"{self.global_step}"
+            f"Resumed from checkpoint: {path}"
+        )
+
+        print(
+            f"  epoch      = {self.start_epoch}"
+        )
+
+        print(
+            f"  global_step = {self.global_step}"
+        )
+
+        print(
+            f"  loss       = {self.last_loss}"
         )

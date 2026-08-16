@@ -6,9 +6,11 @@ from models.encoders.action_encoder import DINOWMActionEncoder
 from models.encoders.feature_adapter import FeatureAdapter
 from models.predictors.dino_predictor import ViTPredictor
 from models.encoders.dinov2 import DINOv2Encoder
+from models.encoders.EUPE_encoder import EUPEEncoder
 
 ENCODER_REGISTRY = {
     "dinov2": DINOv2Encoder,
+    "eupe": EUPEEncoder,
 }
 
 
@@ -58,7 +60,7 @@ def build_dino_wm(config):
     )
 
     num_hist = model_cfg["num_hist"]
-    num_pred = model_cfg["num_pred"]
+   
 
     predictor = ViTPredictor(
         num_patches=num_patches + 1,
@@ -78,7 +80,6 @@ def build_dino_wm(config):
         predictor=predictor,
         feature_adapter=feature_adapter,
         num_hist=num_hist,
-        num_pred=num_pred,
         loss_type=model_cfg.get("loss_type", "mse"),
         normalize_targets=model_cfg.get("normalize_targets", False),
         encoder_trainable=model_cfg.get("encoder_trainable", False),

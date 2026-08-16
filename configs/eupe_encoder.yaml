@@ -4,16 +4,16 @@ model:
   action_dim: 7
   num_hist: 3
   loss_type: mse
-  # BridgeV2 sampling
   source_fps: 5.0
   target_fps: 4.0
   normalize_targets: false
   encoder_trainable: false
+
   encoder:
-    type: dinov2          
-   
+    type: eupe
+
   predictor:
-    dim: 384              
+    dim: 384
     depth: 16
     heads: 6
     mlp_dim: 2048
@@ -23,14 +23,14 @@ model:
 
 data:
   name: bridge
-  batch_size: 16
+  batch_size: 8
   num_workers: 0
   pin_memory: true
 
   params:
     data_dir: raw/bridge_dataset/subset_200_30
     clip_len: 4
-    stride: 4
+    stride: 8
     camera_key: image_0
     source_fps: 5.0
     target_fps: 4.0
@@ -40,18 +40,17 @@ shuffle: true
 training:
   epochs: 50
   device: cuda
-  precision: bf16          
+  precision: bf16
   grad_accumulation_steps: 1
   max_grad_norm: 1.0
   val_every: 1
   save_every: 1
   log_every: 1
   warmup_steps: 1000
-  steps_per_epoch: 300
+  steps_per_epoch: 250
 
 optimizer:
-
-  name: adamw   
+  name: adamw
   lr: 3e-4
   weight_decay: 0.04
   betas: [0.9, 0.95]
@@ -62,8 +61,8 @@ scheduler:
 
 logging:
   backend: console
-  log_every: 1 
-  output_dir: outputs/dino_wm         
+  log_every: 1
+  output_dir: outputs/eupe_encoder
 
 checkpoint:
-  dir: checkpoints/dino_wm
+  dir: checkpoints/eupe_encoder

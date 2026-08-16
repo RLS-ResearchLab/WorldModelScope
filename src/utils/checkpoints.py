@@ -20,33 +20,45 @@ class CheckpointManager:
     def save(
         self,
         model,
-        optimizer,
-        scheduler,
-        epoch,
-        step,
-        loss,
+        optimizers=None,
+        schedulers=None,
+        epoch=0,
+        global_step=0,
+        loss=None,
         scaler=None,
         config=None,
         name="latest.pt",
     ):
+        """
+        Save a complete training checkpoint.
+
+        Stores:
+            - model weights
+            - optimizer states
+            - scheduler states
+            - AMP scaler state
+            - epoch
+            - global step
+            - loss
+            - config
+        """
+
         checkpoint = {
             "epoch": epoch,
-            "step": step,
+            "global_step": global_step,
             "loss": loss,
 
             "model": model.state_dict(),
 
-            "optimizer": (
-                optimizer.state_dict()
-                if optimizer is not None
-                else None
-            ),
+            "optimizers": {
+                name: optimizer.state_dict()
+                for name, optimizer in (optimizers or {}).items()
+            },
 
-            "scheduler": (
-                scheduler.state_dict()
-                if scheduler is not None
-                else None
-            ),
+            "schedulers": {
+                name: scheduler.state_dict()
+                for name, scheduler in (schedulers or {}).items()
+            },
 
             "scaler": (
                 scaler.state_dict()
@@ -64,66 +76,218 @@ class CheckpointManager:
             path,
         )
 
+        # Keep only the requested number of epoch checkpoints.
+        self._cleanup_old_checkpoints()
+
         return path
 
     def load(
-        self,
-        path,
-        model,
-        optimizer=None,
-        scheduler=None,
-        scaler=None,
-        device="cpu",
-    ):
+    self,
+    path,
+    model,
+    optimizers=None,
+    schedulers=None,
+    scaler=None,
+    device="cpu",
+):
+        """
+        Load a checkpoint.
+
+        Supports both:
+
+        OLD format:
+            optimizer
+            scheduler
+            step
+
+        NEW format:
+            optimizers
+            schedulers
+            global_step
+        """
 
         checkpoint = torch.load(
             path,
             map_location=device,
+            weights_only=False,
         )
+
+        # ==========================================================
+        # MODEL
+        # ==========================================================
 
         model.load_state_dict(
             checkpoint["model"]
         )
 
-        if (
-            optimizer is not None
-            and checkpoint.get("optimizer") is not None
-        ):
-            optimizer.load_state_dict(
-                checkpoint["optimizer"]
-            )
+        # ==========================================================
+        # OPTIMIZERS
+        # ==========================================================
 
-        if (
-            scheduler is not None
-            and checkpoint.get("scheduler") is not None
-        ):
-            scheduler.load_state_dict(
-                checkpoint["scheduler"]
-            )
+        if optimizers is not None:
+
+            # ------------------------------------------------------
+            # NEW FORMAT
+            # ------------------------------------------------------
+
+            if "optimizers" in checkpoint:
+
+                saved_optimizers = checkpoint["optimizers"]
+
+                for name, optimizer in optimizers.items():
+
+                    if name in saved_optimizers:
+
+                        optimizer.load_state_dict(
+                            saved_optimizers[name]
+                        )
+
+            # ------------------------------------------------------
+            # OLD FORMAT
+            # ------------------------------------------------------
+
+            elif checkpoint.get("optimizer") is not None:
+
+                optimizer_list = list(
+                    optimizers.values()
+                )
+
+                if optimizer_list:
+
+                    optimizer_list[0].load_state_dict(
+                        checkpoint["optimizer"]
+                    )
+
+                    print(
+                        "Loaded optimizer from old "
+                        "checkpoint format."
+                    )
+
+        # ==========================================================
+        # SCHEDULERS
+        # ==========================================================
+
+        if schedulers is not None:
+
+            # ------------------------------------------------------
+            # NEW FORMAT
+            # ------------------------------------------------------
+
+            if "schedulers" in checkpoint:
+
+                saved_schedulers = checkpoint["schedulers"]
+
+                for name, scheduler in schedulers.items():
+
+                    if name in saved_schedulers:
+
+                        scheduler.load_state_dict(
+                            saved_schedulers[name]
+                        )
+
+            # ------------------------------------------------------
+            # OLD FORMAT
+            # ------------------------------------------------------
+
+            elif checkpoint.get("scheduler") is not None:
+
+                scheduler_list = list(
+                    schedulers.values()
+                )
+
+                if scheduler_list:
+
+                    scheduler_list[0].load_state_dict(
+                        checkpoint["scheduler"]
+                    )
+
+                    print(
+                        "Loaded scheduler from old "
+                        "checkpoint format."
+                    )
+
+        # ==========================================================
+        # AMP SCALER
+        # ==========================================================
 
         if (
             scaler is not None
             and checkpoint.get("scaler") is not None
         ):
+
             scaler.load_state_dict(
                 checkpoint["scaler"]
             )
 
-        return {
-            "epoch": checkpoint.get(
-                "epoch",
-                0,
-            ),
-            "step": checkpoint.get(
+        # ==========================================================
+        # EPOCH
+        # ==========================================================
+
+        epoch = checkpoint.get(
+            "epoch",
+            0,
+        )
+
+        # ==========================================================
+        # GLOBAL STEP
+        # ==========================================================
+
+        # New checkpoint format
+        if "global_step" in checkpoint:
+
+            global_step = checkpoint["global_step"]
+
+        # Old checkpoint format
+        else:
+
+            global_step = checkpoint.get(
                 "step",
                 0,
-            ),
+            )
+
+        # ==========================================================
+        # RETURN
+        # ==========================================================
+
+        return {
+            "epoch": epoch,
+
+            "global_step": global_step,
+
             "loss": checkpoint.get(
                 "loss",
                 None,
             ),
+
             "config": checkpoint.get(
                 "config",
                 None,
             ),
+
+            "history": checkpoint.get(
+                "history",
+                [],
+            ),
         }
+
+    def _cleanup_old_checkpoints(self):
+        """
+        Keep only the latest `keep_last` epoch checkpoints.
+
+        `latest.pt` is always preserved.
+        """
+
+        if self.keep_last is None:
+            return
+
+        checkpoints = list(
+            self.directory.glob("epoch_*.pt")
+        )
+
+        checkpoints.sort(
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+
+        for path in checkpoints[self.keep_last:]:
+            path.unlink()

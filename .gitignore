@@ -24,7 +24,7 @@ checkpoints/
 
 # Datasets & Temp Files
 raw/
-datasets/_temp/
+
 
 # Model Outputs & Logs
 outputs/

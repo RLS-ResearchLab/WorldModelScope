@@ -12,7 +12,6 @@ class DINOWM(nn.Module):
     action_encoder,
     predictor,
     num_hist,
-    num_pred=1,
     loss_type="mse",
     normalize_targets=False,   # paper uses plain MSE, no normalization by default
     encoder_trainable=False,
@@ -26,7 +25,7 @@ class DINOWM(nn.Module):
         self.feature_adapter = feature_adapter
 
         self.num_hist = num_hist #H
-        self.num_pred = num_pred  
+        
         self.loss_type = loss_type
         self.normalize_targets = normalize_targets
         self.encoder_trainable = encoder_trainable
@@ -196,6 +195,7 @@ class DINOWM(nn.Module):
 
         observations = batch["observations"]
         actions = batch["actions"]
+        actions = actions[:, :-1]
 
         # --------------------------------------------------
         # Expected BridgeV2 training sample
