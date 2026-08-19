@@ -6,11 +6,13 @@ from models.world_models.factory import build_model
 
 from datasets.dataloader import build_dataloaders
 
+from src.utils.checkpoints import peek_wandb_run_id
+
 from src.utils.optimizer import build_optimizer
 from src.utils.scheduler import build_scheduler
 from src.utils.logger import Logger, WandbLogger, CombinedLogger
 
-# from src.utils.checkpoints import peek_wandb_run_id
+
 from train import Trainer
 
 

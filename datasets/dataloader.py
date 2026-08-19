@@ -13,6 +13,9 @@ def build_dataset(data_cfg, split):
     if name not in DATASET_REGISTRY:
         raise ValueError(f"Unknown dataset '{name}'. Available: {list(DATASET_REGISTRY)}")
     params = dict(data_cfg.get("params", {}))
+    split_cfg = data_cfg.get(split, {})
+    params.update(split_cfg)
+
     return DATASET_REGISTRY[name](split=split, **params)
 
 
@@ -35,8 +38,12 @@ def build_dataloader(config, split="train"):
 
 
 def build_dataloaders(config):
+    data_cfg = config["data"]
+
     """Convenience: return both train and val loaders."""
     return {
         "train": build_dataloader(config, split="train"),
         "val": build_dataloader(config, split="val"),
     }
+
+    

@@ -28,13 +28,21 @@ data:
   num_workers: 0
   pin_memory: true
 
-  params:
+  train:
     data_dir: raw/bridge_dataset/1.0.0
-    clip_len: 4
-    stride: 4
+    clip_len: 24
+    stride: 8
     camera_key: image_0
     source_fps: 5.0
     target_fps: 4.0
+  val:
+    data_dir: raw/bridge_dataset/1.0.0
+    clip_len: 128
+    stride: 64
+    camera_key: image_0
+    source_fps: 5.0
+    target_fps: 4.0
+     
 
 training:
   
