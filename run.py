@@ -1,15 +1,16 @@
 import argparse
+
 from src.utils.config import load_config
 
 from models.world_models.factory import build_model
 
-from datasets.dataloader import build_dataloader
+from datasets.dataloader import build_dataloaders
 
 from src.utils.optimizer import build_optimizer
 from src.utils.scheduler import build_scheduler
 from src.utils.logger import Logger, WandbLogger, CombinedLogger
-from src.utils.checkpoints import CheckpointManager
 
+# from src.utils.checkpoints import peek_wandb_run_id
 from train import Trainer
 
 
@@ -19,49 +20,62 @@ def main(config_path):
 
     model = build_model(config)
 
-    train_loader = build_dataloader(config)
+    loaders = build_dataloaders(config)
+    train_loader = loaders["train"]
+    val_loader = loaders["val"]
 
     optimizer = build_optimizer(
         model,
         config["optimizer"],
     )
     optimizers = {
-    "main": optimizer,
+        "main": optimizer,
     }
-  
+
     scheduler = build_scheduler(
         optimizer,
         config["scheduler"],
-        config["training"]["epochs"] * config["training"]["steps_per_epoch"]
+        config["training"]["max_steps"]
     )
     schedulers = {
-    "main": scheduler,
+        "main": scheduler,
     }
+
+    # If resuming, read the saved wandb run id BEFORE building the logger, so WandbLogger can
+    # reconnect to that exact run instead of starting a new disconnected one.
+    resume_path = config.get("resume_from")
+    resume_wandb_id = peek_wandb_run_id(resume_path) if resume_path else None
 
     logger = CombinedLogger([
         Logger(config["logging"]["output_dir"]),
         WandbLogger(
-            project="dino-wm-bridge",
+            project="dino-wm",
             name=None,
+            output_dir=config["logging"]["output_dir"],
             config=config,
+            resume_id=resume_wandb_id,
         ),
     ])
-
-    checkpoint = CheckpointManager(
-        config["checkpoint"]["dir"],
-    )
 
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
+        val_loader=val_loader,
         optimizers=optimizers,
         schedulers=schedulers,
         logger=logger,
-        checkpoint_manager=checkpoint,
+        checkpoint_dir=config["checkpoint"]["dir"],
         config=config,
     )
 
-    trainer.fit()
+    # Hand the (possibly new) wandb run id to the trainer so every checkpoint from here on
+    # carries it forward -- covers both the fresh-run case and the resumed case.
+    trainer.wandb_run_id = logger.get_wandb_run_id()
+
+    if resume_path:
+        trainer.load_checkpoint(resume_path)
+
+    trainer.train()
 
 
 if __name__ == "__main__":

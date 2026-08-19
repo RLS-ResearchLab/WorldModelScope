@@ -18,8 +18,8 @@ from pathlib import Path
 from urllib.request import urlopen
 
 SOURCE = "https://rail.eecs.berkeley.edu/datasets/bridge_release/data/tfds/bridge_dataset/1.0.0"
-TRAIN_SHARDS = 400
-VAL_SHARDS = 80
+TRAIN_SHARDS = 1024
+VAL_SHARDS = 128
 METADATA = ("dataset_info.json", "features.json")
 
 

@@ -1,293 +1,97 @@
+"""Save/resume for dino_wm training: step-based (not epoch-based) checkpointing.
+
+Why step-based: BridgeDataset is an IterableDataset streaming trajectory windows -- there's no
+fixed-length "pass over the dataset" to call an epoch, so `step` (= number of optimizer updates)
+is the only unit that stays well-defined regardless of how much data exists or how it's shuffled.
+It's also what the LR scheduler and wandb x-axis already track.
+
+Matches the real Trainer structure: one unified `model` (not separate submodules), plus dict-style
+`optimizers` / `schedulers` (Trainer supports multiple named optimizers, e.g. different LR groups,
+even though main.py currently only registers one under "main").
+"""
 from pathlib import Path
+from typing import Any
+
 import torch
 
 
-class CheckpointManager:
+def save_checkpoint(
+    path: str | Path,
+    step: int,
+    model: torch.nn.Module,
+    optimizers: dict[str, torch.optim.Optimizer],
+    schedulers: dict[str, torch.optim.lr_scheduler.LRScheduler] | None = None,
+    grad_scaler: torch.amp.GradScaler | None = None,
+    loss: float | None = None,
+    wandb_run_id: str | None = None,
+    config: dict | None = None,
+) -> None:
+    """Atomic write (temp file + rename): a crash mid-save never leaves `path` pointing at a
+    half-written file.
 
-    def __init__(
-        self,
-        directory,
-        keep_last=3,
-    ):
-        self.directory = Path(directory)
-        self.directory.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+    Every checkpoint is kept -- no pruning here. Call this less often (bump `save_every` in
+    config) rather than pruning after the fact, if disk becomes a concern.
+    """
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
 
-        self.keep_last = keep_last
-
-    def save(
-        self,
-        model,
-        optimizers=None,
-        schedulers=None,
-        epoch=0,
-        global_step=0,
-        loss=None,
-        scaler=None,
-        config=None,
-        name="latest.pt",
-    ):
-        """
-        Save a complete training checkpoint.
-
-        Stores:
-            - model weights
-            - optimizer states
-            - scheduler states
-            - AMP scaler state
-            - epoch
-            - global step
-            - loss
-            - config
-        """
-
-        checkpoint = {
-            "epoch": epoch,
-            "global_step": global_step,
-            "loss": loss,
-
+    torch.save(
+        {
+            "step": step,
             "model": model.state_dict(),
-
-            "optimizers": {
-                name: optimizer.state_dict()
-                for name, optimizer in (optimizers or {}).items()
-            },
-
-            "schedulers": {
-                name: scheduler.state_dict()
-                for name, scheduler in (schedulers or {}).items()
-            },
-
-            "scaler": (
-                scaler.state_dict()
-                if scaler is not None
-                else None
+            "optimizers": {name: opt.state_dict() for name, opt in optimizers.items()},
+            "schedulers": (
+                {name: sch.state_dict() for name, sch in schedulers.items()}
+                if schedulers
+                else {}
             ),
-
+            "grad_scaler": grad_scaler.state_dict() if grad_scaler is not None else None,
+            "loss": loss,
+            "wandb_run_id": wandb_run_id,
             "config": config,
-        }
+        },
+        tmp,
+    )
+    tmp.replace(path)
 
-        path = self.directory / name
 
-        torch.save(
-            checkpoint,
-            path,
-        )
+def load_checkpoint(
+    path: str | Path,
+    model: torch.nn.Module,
+    optimizers: dict[str, torch.optim.Optimizer] | None = None,
+    schedulers: dict[str, torch.optim.lr_scheduler.LRScheduler] | None = None,
+    grad_scaler: torch.amp.GradScaler | None = None,
+    device: str = "cpu",
+) -> dict[str, Any]:
+    """Loads every component in place. Returns a dict with step / loss / wandb_run_id / config
+    for the caller to pull resume state from.
 
-        # Keep only the requested number of epoch checkpoints.
-        self._cleanup_old_checkpoints()
+    Uses .get(...) throughout so a checkpoint saved before some field existed (e.g. no
+    wandb_run_id yet) still loads fine -- missing just means None, same as if it were never
+    passed at save time.
+    """
+    ckpt: dict[str, Any] = torch.load(path, map_location=device, weights_only=False)
 
-        return path
+    model.load_state_dict(ckpt["model"])
 
-    def load(
-    self,
-    path,
-    model,
-    optimizers=None,
-    schedulers=None,
-    scaler=None,
-    device="cpu",
-):
-        """
-        Load a checkpoint.
+    if optimizers is not None:
+        saved_optimizers = ckpt.get("optimizers", {})
+        for name, optimizer in optimizers.items():
+            if name in saved_optimizers:
+                optimizer.load_state_dict(saved_optimizers[name])
 
-        Supports both:
+    if schedulers is not None:
+        saved_schedulers = ckpt.get("schedulers", {})
+        for name, scheduler in schedulers.items():
+            if name in saved_schedulers:
+                scheduler.load_state_dict(saved_schedulers[name])
 
-        OLD format:
-            optimizer
-            scheduler
-            step
+    if grad_scaler is not None and ckpt.get("grad_scaler") is not None:
+        grad_scaler.load_state_dict(ckpt["grad_scaler"])
 
-        NEW format:
-            optimizers
-            schedulers
-            global_step
-        """
-
-        checkpoint = torch.load(
-            path,
-            map_location=device,
-            weights_only=False,
-        )
-
-        # ==========================================================
-        # MODEL
-        # ==========================================================
-
-        model.load_state_dict(
-            checkpoint["model"]
-        )
-
-        # ==========================================================
-        # OPTIMIZERS
-        # ==========================================================
-
-        if optimizers is not None:
-
-            # ------------------------------------------------------
-            # NEW FORMAT
-            # ------------------------------------------------------
-
-            if "optimizers" in checkpoint:
-
-                saved_optimizers = checkpoint["optimizers"]
-
-                for name, optimizer in optimizers.items():
-
-                    if name in saved_optimizers:
-
-                        optimizer.load_state_dict(
-                            saved_optimizers[name]
-                        )
-
-            # ------------------------------------------------------
-            # OLD FORMAT
-            # ------------------------------------------------------
-
-            elif checkpoint.get("optimizer") is not None:
-
-                optimizer_list = list(
-                    optimizers.values()
-                )
-
-                if optimizer_list:
-
-                    optimizer_list[0].load_state_dict(
-                        checkpoint["optimizer"]
-                    )
-
-                    print(
-                        "Loaded optimizer from old "
-                        "checkpoint format."
-                    )
-
-        # ==========================================================
-        # SCHEDULERS
-        # ==========================================================
-
-        if schedulers is not None:
-
-            # ------------------------------------------------------
-            # NEW FORMAT
-            # ------------------------------------------------------
-
-            if "schedulers" in checkpoint:
-
-                saved_schedulers = checkpoint["schedulers"]
-
-                for name, scheduler in schedulers.items():
-
-                    if name in saved_schedulers:
-
-                        scheduler.load_state_dict(
-                            saved_schedulers[name]
-                        )
-
-            # ------------------------------------------------------
-            # OLD FORMAT
-            # ------------------------------------------------------
-
-            elif checkpoint.get("scheduler") is not None:
-
-                scheduler_list = list(
-                    schedulers.values()
-                )
-
-                if scheduler_list:
-
-                    scheduler_list[0].load_state_dict(
-                        checkpoint["scheduler"]
-                    )
-
-                    print(
-                        "Loaded scheduler from old "
-                        "checkpoint format."
-                    )
-
-        # ==========================================================
-        # AMP SCALER
-        # ==========================================================
-
-        if (
-            scaler is not None
-            and checkpoint.get("scaler") is not None
-        ):
-
-            scaler.load_state_dict(
-                checkpoint["scaler"]
-            )
-
-        # ==========================================================
-        # EPOCH
-        # ==========================================================
-
-        epoch = checkpoint.get(
-            "epoch",
-            0,
-        )
-
-        # ==========================================================
-        # GLOBAL STEP
-        # ==========================================================
-
-        # New checkpoint format
-        if "global_step" in checkpoint:
-
-            global_step = checkpoint["global_step"]
-
-        # Old checkpoint format
-        else:
-
-            global_step = checkpoint.get(
-                "step",
-                0,
-            )
-
-        # ==========================================================
-        # RETURN
-        # ==========================================================
-
-        return {
-            "epoch": epoch,
-
-            "global_step": global_step,
-
-            "loss": checkpoint.get(
-                "loss",
-                None,
-            ),
-
-            "config": checkpoint.get(
-                "config",
-                None,
-            ),
-
-            "history": checkpoint.get(
-                "history",
-                [],
-            ),
-        }
-
-    def _cleanup_old_checkpoints(self):
-        """
-        Keep only the latest `keep_last` epoch checkpoints.
-
-        `latest.pt` is always preserved.
-        """
-
-        if self.keep_last is None:
-            return
-
-        checkpoints = list(
-            self.directory.glob("epoch_*.pt")
-        )
-
-        checkpoints.sort(
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-
-        for path in checkpoints[self.keep_last:]:
-            path.unlink()
+    return {
+        "step": ckpt.get("step", 0),
+        "loss": ckpt.get("loss"),
+        "wandb_run_id": ckpt.get("wandb_run_id"),
+        "config": ckpt.get("config"),
+    }
