@@ -60,7 +60,8 @@ optimizer:
 
 scheduler:
   type: cosine
-  warmup_steps: 800   
+  warmup_steps: 800  
+  min_lr: 1.0e-6 
 
 logging:
   backend: console

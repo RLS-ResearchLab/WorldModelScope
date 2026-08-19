@@ -1,46 +1,25 @@
 import torch 
-def build_scheduler(
-    optimizer,
-    config,
-    total_steps,
-):
-    name = config.get(
-        "name",
-        "cosine"
-    ).lower()
+from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 
-    if name == "cosine":
+def build_scheduler(optimizer, config, max_steps):
 
-        min_lr = config.get(
-            "min_lr",
-            0.0
-        )
+    warmup_steps = config["warmup_steps"]
 
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=total_steps,
-            eta_min=min_lr,
-        )
+    warmup = LinearLR(
+        optimizer,
+        start_factor=1e-3,   # LR starts at ~0.1% of base LR
+        end_factor=1.0,      # ramps up to 100% of base LR
+        total_iters=warmup_steps,
+    )
 
-    elif name == "constant":
+    decay = CosineAnnealingLR(
+        optimizer,
+        T_max=max_steps - warmup_steps,   # remaining steps after warmup
+        eta_min=config.get("min_lr", 0.0),
+    )
 
-        scheduler = torch.optim.lr_scheduler.ConstantLR(
-            optimizer,
-            factor=1.0,
-            total_iters=total_steps,
-        )
-
-    elif name == "step":
-
-        scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer,
-            step_size=config["step_size"],
-            gamma=config.get("gamma", 0.1),
-        )
-
-    else:
-        raise ValueError(
-            f"Unknown scheduler: {name}"
-        )
-
-    return scheduler
+    return SequentialLR(
+        optimizer,
+        schedulers=[warmup, decay],
+        milestones=[warmup_steps],   # switch from warmup → decay at this step
+    )

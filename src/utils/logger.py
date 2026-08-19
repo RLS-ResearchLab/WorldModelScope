@@ -84,9 +84,10 @@ class WandbLogger:
         # Exposed so callers (main.py) can pull the run id back out and hand it to Trainer for
         # checkpointing -- this is the other half of the round trip that resume_id closes.
         self.run_id = self.run.id
+        print(f"W&B run initialized: {self.run.id}")
 
     def log(self, step, metrics):
-        wandb.log(metrics, step=step)
+        self.run.log(metrics, step=step)
 
     def save_checkpoint(self, checkpoint_path, name="model-checkpoint"):
         artifact = wandb.Artifact(name=name, type="model")
