@@ -2,6 +2,14 @@ import torch
 from torch import nn
 from einops import rearrange
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
+
+try:
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+    _HAS_SDPA_KERNEL_CTX = True
+except ImportError:
+    _HAS_SDPA_KERNEL_CTX = False
+
 
 def generate_causal_mask(
     num_frames: int,
@@ -51,12 +59,10 @@ def generate_causal_mask(
         dim=1,
     )
 
-
     return mask.unsqueeze(0).unsqueeze(0)
 
 
 class FeedForward(nn.Module):
-
 
     def __init__(
         self,
@@ -89,6 +95,7 @@ class Attention(nn.Module):
         heads: int = 8,
         dim_head: int = 64,
         dropout: float = 0.0,
+        sdpa_backend: str = "auto",
     ):
         super().__init__()
 
@@ -116,6 +123,12 @@ class Attention(nn.Module):
 
         self.num_frames = num_frames
         self.num_patches = num_patches
+        # "auto" leaves backend selection to PyTorch (may fall back to the
+        # memory-heavy math kernel with a custom mask). "efficient" forces
+        # the memory-efficient backend, which does NOT materialize the full
+        # N x N score matrix and is what actually saves memory here.
+        self.sdpa_backend = sdpa_backend
+
         self.register_buffer(
             "causal_mask",
             generate_causal_mask(
@@ -135,12 +148,17 @@ class Attention(nn.Module):
         v = rearrange(v, "b n (h d) -> b h n d", h=self.heads)
 
         mask = self.causal_mask[..., :N, :N].bool()  # SDPA wants bool: True = keep
+        dropout_p = self.dropout.p if self.training else 0.0
 
-        out = F.scaled_dot_product_attention(
-            q, k, v,
-            attn_mask=mask,
-            dropout_p=self.dropout.p if self.training else 0.0,
-        )
+        if self.sdpa_backend == "efficient" and _HAS_SDPA_KERNEL_CTX:
+            with sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION):
+                out = F.scaled_dot_product_attention(
+                    q, k, v, attn_mask=mask, dropout_p=dropout_p,
+                )
+        else:
+            out = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=mask, dropout_p=dropout_p,
+            )
 
         out = rearrange(out, "b h n d -> b n (h d)")
         return self.to_out(out)
@@ -149,6 +167,14 @@ class Attention(nn.Module):
 class Transformer(nn.Module):
     """
     Transformer used as the DINO-WM latent predictor.
+
+    use_checkpoint=True wraps each attention/feedforward sublayer in
+    torch.utils.checkpoint, so activations for that sublayer are freed
+    after the forward pass and recomputed during backward instead of
+    being kept resident for all `depth` layers simultaneously. This is
+    the single biggest lever for fitting a longer num_hist in memory --
+    it trades ~25-30% more compute time for roughly a 1/depth reduction
+    in stored activation memory.
     """
 
     def __init__(
@@ -161,9 +187,12 @@ class Transformer(nn.Module):
         dim_head: int,
         mlp_dim: int,
         dropout: float = 0.0,
+        use_checkpoint: bool = True,
+        sdpa_backend: str = "auto",
     ):
         super().__init__()
 
+        self.use_checkpoint = use_checkpoint
         self.layers = nn.ModuleList()
 
         for _ in range(depth):
@@ -178,6 +207,7 @@ class Transformer(nn.Module):
                             heads=heads,
                             dim_head=dim_head,
                             dropout=dropout,
+                            sdpa_backend=sdpa_backend,
                         ),
                         FeedForward(
                             dim=dim,
@@ -190,21 +220,34 @@ class Transformer(nn.Module):
 
         self.norm = nn.LayerNorm(dim)
 
+    def _attn_block(self, attention, x):
+        return attention(x) + x
+
+    def _ff_block(self, feed_forward, x):
+        return feed_forward(x) + x
+
     def forward(self, x):
+
+        do_checkpoint = self.use_checkpoint and self.training
 
         for attention, feed_forward in self.layers:
 
-            # Attention + residual connection.
-            x = attention(x) + x
-
-            # Feed-forward + residual connection.
-            x = feed_forward(x) + x
+            if do_checkpoint:
+                x = checkpoint(
+                    self._attn_block, attention, x, use_reentrant=False
+                )
+                x = checkpoint(
+                    self._ff_block, feed_forward, x, use_reentrant=False
+                )
+            else:
+                x = self._attn_block(attention, x)
+                x = self._ff_block(feed_forward, x)
 
         return self.norm(x)
 
 
 class ViTPredictor(nn.Module):
-  
+
     def __init__(
         self,
         *,
@@ -217,7 +260,8 @@ class ViTPredictor(nn.Module):
         dim_head: int = 64,
         dropout: float = 0.0,
         emb_dropout: float = 0.0,
-        temporal_group_size: int = 2,
+        use_checkpoint: bool = True,
+        sdpa_backend: str = "auto",
     ):
         super().__init__()
 
@@ -228,25 +272,9 @@ class ViTPredictor(nn.Module):
         self.num_frames = num_frames
         self.dim = dim
 
-        self.temporal_group_size = temporal_group_size
-
-        if num_frames % temporal_group_size != 0:
-            raise ValueError(
-                f"num_frames={num_frames} must be divisible by "
-                f"temporal_group_size={temporal_group_size}"
-            )
-
-        self.predictor_frames = (
-            num_frames // temporal_group_size
-        )
-        self.temporal_merger = TemporalTokenMerger(
-        dim=dim,
-        temporal_group_size=temporal_group_size,
-    )
-
         # Total number of tokens processed by the predictor.
         self.num_tokens = (
-            self.predictor_frames * num_patches
+            num_frames * num_patches
         )
 
         # Learned spatio-temporal positional embeddings.
@@ -268,13 +296,15 @@ class ViTPredictor(nn.Module):
 
         self.transformer = Transformer(
             dim=dim,
-            num_frames=self.predictor_frames,
+            num_frames=num_frames,
             num_patches=num_patches,
             depth=depth,
             heads=heads,
             dim_head=dim_head,
             mlp_dim=mlp_dim,
             dropout=dropout,
+            use_checkpoint=use_checkpoint,
+            sdpa_backend=sdpa_backend,
         )
 
     def forward(self, x):
@@ -286,30 +316,21 @@ class ViTPredictor(nn.Module):
                 f"but received {D}."
             )
 
-        expected_input_tokens = (
-        self.num_frames * self.num_patches
-    )
+        max_tokens = self.num_frames * self.num_patches
 
-        if N != expected_input_tokens:
+        if N > max_tokens:
             raise ValueError(
-                f"ViTPredictor expected {expected_input_tokens} "
-                f"input tokens "
-                f"({self.num_frames} frames × "
-                f"{self.num_patches} patches), "
-                f"but received {N}."
+                f"ViTPredictor received {N} tokens, which exceeds the "
+                f"maximum window it was built for "
+                f"({self.num_frames} frames x {self.num_patches} tokens/frame "
+                f"= {max_tokens})."
             )
-         # -------------------------------------------------
-         # TEMPORAL TOKEN FUSION
-        # -------------------------------------------------
 
-        x = self.temporal_merger(
-            x,
-            num_frames=self.num_frames,
-            num_patches=self.num_patches,
-        )
-        N = x.shape[1]
-
-        
+        if N % self.num_patches != 0:
+            raise ValueError(
+                f"ViTPredictor received {N} tokens, which is not a whole "
+                f"number of frames (tokens/frame = {self.num_patches})."
+            )
 
         x = x + self.pos_embedding[:, :N]
         x = self.dropout(x)

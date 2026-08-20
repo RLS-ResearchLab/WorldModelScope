@@ -44,7 +44,7 @@ class DINOWMActionEncoder(nn.Module):
         self.emb_dim = emb_dim
         self.tubelet_size = tubelet_size
 
-        if tubelet_size != 1:
+        if tubelet_size < 1:
             raise NotImplementedError(
                 "DINO-WM currently uses "
                 "tubelet_size=1 for actions."
@@ -72,7 +72,11 @@ class DINOWMActionEncoder(nn.Module):
                 f"Expected action dimension "
                 f"{self.action_dim}, got {D}"
             )
-
+        if T % self.tubelet_size != 0:
+            raise ValueError(
+                f"Number of actions ({T}) must be divisible by "
+                f"tubelet_size ({self.tubelet_size})"
+            )
         # Conv1d expects:
         #
         # (B, channels, sequence_length)

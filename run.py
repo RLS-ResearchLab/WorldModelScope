@@ -6,7 +6,12 @@ from models.world_models.factory import build_model
 
 from datasets.dataloader import build_dataloaders
 
-from src.utils.checkpoints import peek_wandb_run_id
+from pathlib import Path
+
+from src.utils.checkpoints import (
+    find_latest_checkpoint,
+    peek_wandb_run_id,
+)
 
 from src.utils.optimizer import build_optimizer
 from src.utils.scheduler import build_scheduler
@@ -19,6 +24,24 @@ from train import Trainer
 def main(config_path):
 
     config = load_config(config_path)
+
+    resume_path = config.get("resume_from")
+
+    if resume_path == "auto":
+        resume_path = find_latest_checkpoint(
+            config["checkpoint"]["dir"]
+        )
+
+    if resume_path is not None:
+        resume_path = Path(resume_path)
+
+        print(f"Resuming from: {resume_path}")
+
+        resume_wandb_id = peek_wandb_run_id(resume_path)
+
+    else:
+        print("Starting a fresh training run.")
+        resume_wandb_id = None
 
     model = build_model(config)
 
@@ -43,19 +66,17 @@ def main(config_path):
         "main": scheduler,
     }
 
-    # If resuming, read the saved wandb run id BEFORE building the logger, so WandbLogger can
-    # reconnect to that exact run instead of starting a new disconnected one.
-    resume_path = config.get("resume_from")
-    resume_wandb_id = peek_wandb_run_id(resume_path) if resume_path else None
+    
 
     logger = CombinedLogger([
         Logger(config["logging"]["output_dir"]),
         WandbLogger(
             project="dino-wm",
-            name=None,
+            name=config.get("run_name"),
             output_dir=config["logging"]["output_dir"],
             config=config,
             resume_id=resume_wandb_id,
+            
         ),
     ])
 

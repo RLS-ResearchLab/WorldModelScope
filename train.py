@@ -47,13 +47,21 @@ class Trainer:
         self.save_every = training_cfg.get("save_every", 1000)
         self.log_every = training_cfg.get("log_every", 50)
 
+        """self.max_steps = training_cfg.get("max_steps")"""
         self.max_steps = training_cfg.get("max_steps")
+
         if self.max_steps is None:
             raise ValueError(
-                "config['training']['max_steps'] is required -- there's no epoch count to "
-                "fall back on to know when training ends."
+                "config['training']['max_steps'] is required."
             )
 
+        self.steps_per_run = training_cfg.get(
+            "steps_per_run",
+            self.max_steps,
+        )
+        self.run_start_step = 0
+        self.run_end_step = self.max_steps
+        
         # DEVICE
         self.device = torch.device(
             training_cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
@@ -192,10 +200,34 @@ class Trainer:
 
         data_iter = iter(self.train_loader)
 
-        progress = tqdm(total=self.max_steps, initial=self.global_step, desc="steps")
+        self.run_start_step = self.global_step
+
+        self.run_end_step = min(
+            self.global_step + self.steps_per_run,
+            self.max_steps,
+        )
+
+        print()
+        print("=" * 70)
+        print("TRAINING RUN")
+        print("=" * 70)
+        print(f"Global step at start : {self.global_step}")
+        print(f"Global target        : {self.max_steps}")
+        print(f"Steps this run       : {self.steps_per_run}")
+        print(f"Global step at end   : {self.run_end_step}")
+        print("=" * 70)
+        print()
+
+        
+
+        progress = tqdm(
+        total=self.run_end_step,
+        initial=self.global_step,
+        desc="steps",
+    )
         total_start = time.time()
 
-        while self.global_step < self.max_steps:
+        while self.global_step < self.run_end_step:
 
             # ------------------------------------------------------
             # ACCUMULATE grad_accumulation_steps micro-batches into
@@ -290,11 +322,15 @@ class Trainer:
 
         # final checkpoint at the very end, even if global_step doesn't land on save_every
         if self.checkpoint_dir is not None:
+            if self.global_step % self.save_every != 0:
+                self._save_checkpoint(loss=last_loss)
             self._save_checkpoint(loss=last_loss)
 
         total_time = time.time() - total_start
         print(f"Training completed in {total_time / 60:.2f} minutes ({self.global_step} steps)")
 
+        if self.global_step >= self.max_steps:
+            print(f"GLOBAL TRAINING COMPLETE: {self.global_step}/{self.max_steps}")
         return self.history
 
     # ==============================================================

@@ -6,6 +6,7 @@ without materializing an intermediate directory of ``.npz`` files.
 from __future__ import annotations
 
 import random
+import tensorflow as tf
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +24,15 @@ def resample_indices(length: int, source_fps: float = 5.0, target_fps: float = 4
     count = int(np.floor((length - 1) * target_fps / source_fps)) + 1
     return np.unique(np.rint(np.arange(count) * source_fps / target_fps).astype(np.int64))
 
-
+def _list_shard_files(data_dir: Path, split: str) -> list[str]:
+    pattern = f"bridge_dataset-{split}.tfrecord-*"
+    files = sorted(data_dir.glob(pattern))
+    if not files:
+        raise FileNotFoundError(
+            f"No shard files matching '{pattern}' found in {data_dir}. "
+            f"Check that download.py actually populated this directory."
+        )
+    return [str(f) for f in files]
 class BridgeDataset(IterableDataset):
     """Stream fixed-length clips from one official BridgeData split.
 
@@ -65,10 +74,21 @@ class BridgeDataset(IterableDataset):
         worker_id = worker.id if worker else 0
         worker_count = worker.num_workers if worker else 1
         rng = random.Random(torch.initial_seed() + worker_id)
-        builder = tfds.builder_from_directory(str(self.data_dir))
-        dataset = builder.as_dataset(split=self.split, shuffle_files=self.shuffle)
+        """builder = tfds.builder_from_directory(str(self.data_dir))
+        dataset = builder.as_dataset(split=self.split, shuffle_files=self.shuffle)"""
+        builder = tfds.builder_from_directory(str(self.data_dir))  # kept, but only used for .info.features now
 
-        for episode_index, episode in enumerate(tfds.as_numpy(dataset)):
+        shard_files = _list_shard_files(self.data_dir, self.split)
+        if self.shuffle:
+            rng.shuffle(shard_files)
+
+        raw_ds = tf.data.TFRecordDataset(shard_files)
+        decoded_ds = raw_ds.map(
+            builder.info.features.deserialize_example,
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+        for episode_index, episode in enumerate(tfds.as_numpy(decoded_ds)):
+        #for episode_index, episode in enumerate(tfds.as_numpy(dataset)):
             if episode_index % worker_count != worker_id:
                 continue
             steps = list(episode["steps"])

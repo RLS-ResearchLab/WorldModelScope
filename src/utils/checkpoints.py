@@ -14,6 +14,52 @@ from typing import Any
 
 import torch
 
+def peek_wandb_run_id(path: str | Path) -> str | None:
+    """Read only the W&B run ID stored in a checkpoint.
+
+    Used before creating the W&B logger so a resumed training run
+    reconnects to the exact same W&B run.
+    """
+    path = Path(path)
+
+    if not path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {path}")
+
+    ckpt = torch.load(
+        path,
+        map_location="cpu",
+        weights_only=False,
+    )
+
+    return ckpt.get("wandb_run_id")
+
+def find_latest_checkpoint(checkpoint_dir: str | Path) -> Path | None:
+    checkpoint_dir = Path(checkpoint_dir)
+
+    if not checkpoint_dir.exists():
+        return None
+
+    checkpoints = list(checkpoint_dir.glob("step_*.pt"))
+
+    if not checkpoints:
+        return None
+
+    def get_step(path: Path) -> int:
+        try:
+            return int(path.stem.split("_")[1])
+        except (IndexError, ValueError):
+            return -1
+
+    checkpoints = [
+        path for path in checkpoints
+        if get_step(path) >= 0
+    ]
+
+    if not checkpoints:
+        return None
+
+    return max(checkpoints, key=get_step)
+
 
 def save_checkpoint(
     path: str | Path,

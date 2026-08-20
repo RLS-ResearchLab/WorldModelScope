@@ -191,7 +191,7 @@ class DINOWM(nn.Module):
 
    
 
-    def compute_loss(self, batch):
+    """def compute_loss(self, batch):
 
         observations = batch["observations"]
         actions = batch["actions"]
@@ -312,8 +312,81 @@ class DINOWM(nn.Module):
         return loss, {
             "prediction_loss": loss.detach(),
         }
+"""
 
+    def compute_loss(self, batch):
+        observations = batch["observations"]
+        actions = batch["actions"]
 
+        B, T, C, H_img, W_img = observations.shape
+
+        # We need at least H+1 observations:
+        # H frames for context + 1 future frame as target.
+        if T < self.num_hist + 1:
+            raise ValueError(
+                f"Need at least {self.num_hist + 1} observations "
+                f"for num_hist={self.num_hist}, "
+                f"but received {T}."
+            )
+
+        # Actions should be aligned with transitions:
+        # a_t takes frame t -> frame t+1.
+        if actions.shape[1] != T:
+            raise ValueError(
+                f"Expected {T} actions after Trainer padding, "
+                f"but received {actions.shape[1]}."
+            )
+
+        # ---------------------------------------------------------
+        # Encode the entire long clip once.
+        # ---------------------------------------------------------
+        z = self.encode_observations(observations)
+        # z: [B, T, P, D]
+
+        total_loss = 0.0
+        num_windows = T - self.num_hist
+
+        # ---------------------------------------------------------
+        # Sliding training windows.
+        # ---------------------------------------------------------
+        for start in range(num_windows):
+
+            end = start + self.num_hist
+
+            # Context frames:
+            # [start, ..., end-1]
+            context = z[:, start:end]
+
+            # Actions:
+            # action[start] ... action[end-1]
+            window_actions = actions[:, start:end]
+
+            # Targets:
+            # frames [start+1, ..., end]
+            target = z[:, start + 1:end + 1]
+
+            predicted = self.predict(
+                context=context,
+                actions=window_actions,
+            )
+
+            if predicted.shape != target.shape:
+                raise ValueError(
+                    f"Prediction shape {predicted.shape} "
+                    f"does not match target shape {target.shape}."
+                )
+
+            total_loss = total_loss + self.compute_prediction_loss(
+                predicted,
+                target,
+            )
+
+        loss = total_loss / num_windows
+
+        return loss, {
+            "prediction_loss": loss.detach(),
+            "num_windows": num_windows,
+        }
     @torch.no_grad()
     def validation_step(self, batch):
         self.eval()

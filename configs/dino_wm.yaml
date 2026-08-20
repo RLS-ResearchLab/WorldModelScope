@@ -1,9 +1,10 @@
-run_name: full_data_run1
+run_name: full_data-run2
+
 model:
   name: dino_wm
   image_size: 224              # was 256 -> shrinks P (patch count) roughly 30%
   action_dim: 7
-  num_hist: 16                 # your target -- now safe with the patches below
+  num_hist: 12               # your target -- now safe with the patches below
   loss_type: mse
   source_fps: 5.0
   target_fps: 4.0
@@ -12,7 +13,7 @@ model:
   encoder:
     type: dinov2
   feature_adapter:
-    pool_size: 2                # NEW: 2x2 avg-pool on the patch grid -> P/4
+    pool_size: 4            # NEW: 2x2 avg-pool on the patch grid -> P/4
   predictor:
     dim: 384
     depth: 16
@@ -21,17 +22,17 @@ model:
     dim_head: 64
     dropout: 0.0
     emb_dropout: 0.0
-    use_checkpoint: true         # NEW: gradient checkpointing, ~1/depth activation memory
+    use_checkpoint: true      # NEW: gradient checkpointing, ~1/depth activation memory
     sdpa_backend: efficient      # NEW: force the memory-efficient SDPA kernel
 
 data:
   name: bridge
-  batch_size: 1                 # micro-batch -- this (not accumulation) sets peak memory
+  batch_size: 1                # micro-batch -- this (not accumulation) sets peak memory
   num_workers: 0
   pin_memory: true
   train:
     data_dir: raw/bridge_dataset/1.0.0
-    clip_len: 24                # can stay > num_hist+1 now; Trainer samples a random window
+    clip_len: 13               # can stay > num_hist+1 now; Trainer samples a random window
     stride: 8
     camera_key: image_0
     source_fps: 5.0
@@ -47,15 +48,16 @@ data:
 training:
   device: cuda
   precision: bf16
-  grad_accumulation_steps: 32    # 1 (batch) x 32 (accum) = effective batch 32
+  grad_accumulation_steps: 32   # 1 (batch) x 32 (accum) = effective batch 32
   max_grad_norm: 1.0
   max_steps: 16000
   log_every: 50
   val_every: 2000
   save_every: 1000
+  steps_per_run: 2000
   warmup_steps: 800
 
-resume_from: null
+resume_from: auto
 optimizer:
   name: adamw
   lr: 3e-4
@@ -71,3 +73,4 @@ logging:
 
 checkpoint:
   dir: checkpoints/dino_wm/full_dataset
+ 
