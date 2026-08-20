@@ -217,6 +217,7 @@ class ViTPredictor(nn.Module):
         dim_head: int = 64,
         dropout: float = 0.0,
         emb_dropout: float = 0.0,
+        temporal_group_size: int = 2,
     ):
         super().__init__()
 
@@ -227,9 +228,25 @@ class ViTPredictor(nn.Module):
         self.num_frames = num_frames
         self.dim = dim
 
+        self.temporal_group_size = temporal_group_size
+
+        if num_frames % temporal_group_size != 0:
+            raise ValueError(
+                f"num_frames={num_frames} must be divisible by "
+                f"temporal_group_size={temporal_group_size}"
+            )
+
+        self.predictor_frames = (
+            num_frames // temporal_group_size
+        )
+        self.temporal_merger = TemporalTokenMerger(
+        dim=dim,
+        temporal_group_size=temporal_group_size,
+    )
+
         # Total number of tokens processed by the predictor.
         self.num_tokens = (
-            num_frames * num_patches
+            self.predictor_frames * num_patches
         )
 
         # Learned spatio-temporal positional embeddings.
@@ -251,7 +268,7 @@ class ViTPredictor(nn.Module):
 
         self.transformer = Transformer(
             dim=dim,
-            num_frames=num_frames,
+            num_frames=self.predictor_frames,
             num_patches=num_patches,
             depth=depth,
             heads=heads,
@@ -269,21 +286,30 @@ class ViTPredictor(nn.Module):
                 f"but received {D}."
             )
 
-        max_tokens = self.num_frames * self.num_patches
+        expected_input_tokens = (
+        self.num_frames * self.num_patches
+    )
 
-        if N > max_tokens:
+        if N != expected_input_tokens:
             raise ValueError(
-                f"ViTPredictor received {N} tokens, which exceeds the "
-                f"maximum window it was built for "
-                f"({self.num_frames} frames x {self.num_patches} tokens/frame "
-                f"= {max_tokens})."
+                f"ViTPredictor expected {expected_input_tokens} "
+                f"input tokens "
+                f"({self.num_frames} frames × "
+                f"{self.num_patches} patches), "
+                f"but received {N}."
             )
+         # -------------------------------------------------
+         # TEMPORAL TOKEN FUSION
+        # -------------------------------------------------
 
-        if N % self.num_patches != 0:
-            raise ValueError(
-                f"ViTPredictor received {N} tokens, which is not a whole "
-                f"number of frames (tokens/frame = {self.num_patches})."
-            )
+        x = self.temporal_merger(
+            x,
+            num_frames=self.num_frames,
+            num_patches=self.num_patches,
+        )
+        N = x.shape[1]
+
+        
 
         x = x + self.pos_embedding[:, :N]
         x = self.dropout(x)
