@@ -1,3 +1,4 @@
+import random
 import time
 from pathlib import Path
 
@@ -42,9 +43,9 @@ class Trainer:
         self.precision = training_cfg.get("precision", "fp32")
         self.grad_accumulation_steps = training_cfg.get("grad_accumulation_steps", 1)
         self.max_grad_norm = training_cfg.get("max_grad_norm", None)
-        self.val_every = training_cfg.get("val_every", 1000)  
-        self.save_every = training_cfg.get("save_every", 1000) 
-        self.log_every = training_cfg.get("log_every", 50)     
+        self.val_every = training_cfg.get("val_every", 1000)
+        self.save_every = training_cfg.get("save_every", 1000)
+        self.log_every = training_cfg.get("log_every", 50)
 
         self.max_steps = training_cfg.get("max_steps")
         if self.max_steps is None:
@@ -78,7 +79,7 @@ class Trainer:
         # ==========================================================
 
         self.global_step = 0
-        self.wandb_run_id = None  
+        self.wandb_run_id = None
 
         self.history = []
 
@@ -86,27 +87,89 @@ class Trainer:
     # BATCH PREP
     # ==============================================================
 
+    def _sample_window(self, frames, actions, window_len):
+        """
+        Slice a random contiguous window of `window_len` observations
+        (and window_len - 1 aligned actions) out of a longer loaded clip.
+
+        This is what decouples the dataset's clip_len (which can stay
+        large, e.g. 24, for temporal diversity across a training run)
+        from the predictor's fixed num_hist (which sets sequence length
+        N = num_hist * (P+1), and therefore memory). Every step, the
+        model only ever sees a window_len-length slice -- exactly the
+        same amount of work regardless of how long the source clip is.
+
+        frames:  [B, clip_len, C, H, W]
+        actions: [B, clip_len - 1, A]
+
+        Returns observations/actions of length window_len /
+        window_len - 1, padded to window_len with a trailing zero
+        action row (matching the original prepare_batch contract).
+        """
+        clip_len = frames.shape[1]
+
+        if clip_len < window_len:
+            raise ValueError(
+                f"clip_len ({clip_len}) is shorter than the requested "
+                f"window ({window_len} = num_hist + 1). Increase the "
+                f"dataset's clip_len or decrease num_hist."
+            )
+
+        max_start = clip_len - window_len
+        start = random.randint(0, max_start) if max_start > 0 else 0
+
+        obs = frames[:, start:start + window_len]
+        act = actions[:, start:start + window_len - 1]
+
+        pad = torch.zeros_like(act[:, :1])
+        act_padded = torch.cat([act, pad], dim=1)
+
+        return {"observations": obs, "actions": act_padded}
+
     def prepare_batch(self, raw_batch):
         """
         raw_batch:
         frames:  [B, T, C, H, W]
         actions: [B, T-1, A]
 
-        returns:
-        observations: [B, T, C, H, W]
-        actions:      [B, T, A]        (last row is a zero pad, unused in loss)
+        Draws a random num_hist+1 window from the (possibly longer)
+        loaded clip. See `_sample_window` for why.
         """
         frames = raw_batch["frames"]
         actions = raw_batch["actions"]
 
-        B, T_minus_1, A = actions.shape
-        pad = torch.zeros(B, 1, A, dtype=actions.dtype, device=actions.device)
-        actions_padded = torch.cat([actions, pad], dim=1)  # [B, T, A]
+        window_len = self.model.num_hist + 1
+        return self._sample_window(frames, actions, window_len)
 
-        return {
-            "observations": frames,
-            "actions": actions_padded,
-        }
+    def _iter_windows(self, raw_batch, window_len, stride=None):
+        """
+        Non-overlapping (by default) windows spanning the *entire*
+        loaded clip, used for validation. Unlike `_sample_window`
+        (one random slice, used for training), this walks the whole
+        clip so a single long val clip yields several independent
+        num_hist+1 evaluations -- more validation signal per clip
+        without ever increasing the sequence length the model sees
+        in one forward pass.
+        """
+        frames = raw_batch["frames"]
+        actions = raw_batch["actions"]
+        clip_len = frames.shape[1]
+
+        if stride is None:
+            stride = window_len - 1  # non-overlapping by default
+
+        if clip_len < window_len:
+            raise ValueError(
+                f"Val clip_len ({clip_len}) is shorter than num_hist+1 "
+                f"({window_len}); cannot form even one window."
+            )
+
+        for start in range(0, clip_len - window_len + 1, stride):
+            obs = frames[:, start:start + window_len]
+            act = actions[:, start:start + window_len - 1]
+            pad = torch.zeros_like(act[:, :1])
+            act_padded = torch.cat([act, pad], dim=1)
+            yield {"observations": obs, "actions": act_padded}
 
     def _next_batch(self, data_iter):
         """Pull the next batch, silently restarting the loader when the stream runs dry.
@@ -121,8 +184,6 @@ class Trainer:
         except StopIteration:
             data_iter = iter(self.train_loader)
             return next(data_iter), data_iter
-
-    
 
     def train(self):
 
@@ -147,8 +208,8 @@ class Trainer:
             for _ in range(self.grad_accumulation_steps):
 
                 raw_batch, data_iter = self._next_batch(data_iter)
-                batch = self._move_batch(raw_batch)
-                batch = self.prepare_batch(batch)
+                raw_batch = self._move_batch(raw_batch)
+                batch = self.prepare_batch(raw_batch)
 
                 with torch.autocast(
                     device_type=self.device_type,
@@ -269,47 +330,59 @@ class Trainer:
 
     @torch.no_grad()
     def validate(self):
-
+        """
+        Validation clips are typically much longer than num_hist+1
+        (e.g. clip_len=128 while num_hist=16), on purpose -- longer
+        clips give more windows and thus a more reliable validation
+        signal per loaded clip. Rather than requiring clip_len ==
+        num_hist+1 (which would either crash or waste most of the
+        loaded clip), we walk each val clip in non-overlapping
+        num_hist+1 windows and average the loss across all of them.
+        Each individual forward pass is still exactly num_hist+1
+        frames, so this costs no more memory than a single training
+        step -- it just does several such steps per loaded val clip.
+        """
         self.model.eval()
 
+        window_len = self.model.num_hist + 1
+
         total_loss = 0.0
-        num_batches = 0
+        num_windows = 0
         metrics_sum = {}
 
-        # NOTE: val_loader may also be an IterableDataset -- iterating it fully here (rather
-        # than a fixed number of steps) matches whatever "one validation pass" the dataset
-        # itself defines (e.g. a held-out fixed-size split, unlike the infinite train stream).
-        for batch in tqdm(self.val_loader, desc=f"validation @ step {self.global_step}"):
+        for raw_batch in tqdm(self.val_loader, desc=f"validation @ step {self.global_step}"):
 
-            batch = self._move_batch(batch)
-            batch = self.prepare_batch(batch)
+            raw_batch = self._move_batch(raw_batch)
 
-            with torch.autocast(
-                device_type=self.device_type,
-                dtype=self.amp_dtype,
-                enabled=self.use_amp,
-            ):
-                output = self.model.validation_step(batch)
+            for batch in self._iter_windows(raw_batch, window_len):
 
-                if isinstance(output, tuple):
-                    loss, metrics = output
-                else:
-                    loss = output
-                    metrics = {}
+                with torch.autocast(
+                    device_type=self.device_type,
+                    dtype=self.amp_dtype,
+                    enabled=self.use_amp,
+                ):
+                    output = self.model.validation_step(batch)
 
-            total_loss += loss.detach().item()
-            num_batches += 1
+                    if isinstance(output, tuple):
+                        loss, metrics = output
+                    else:
+                        loss = output
+                        metrics = {}
 
-            for name, value in metrics.items():
-                if torch.is_tensor(value):
-                    value = value.detach().float().mean().item()
-                metrics_sum[name] = metrics_sum.get(name, 0.0) + value
+                total_loss += loss.detach().item()
+                num_windows += 1
+
+                for name, value in metrics.items():
+                    if torch.is_tensor(value):
+                        value = value.detach().float().mean().item()
+                    metrics_sum[name] = metrics_sum.get(name, 0.0) + value
 
         self.model.train()
 
-        val_metrics = {"val/loss": total_loss / max(num_batches, 1)}
+        val_metrics = {"val/loss": total_loss / max(num_windows, 1)}
         for name, value in metrics_sum.items():
-            val_metrics[f"val/{name}"] = value / max(num_batches, 1)
+            val_metrics[f"val/{name}"] = value / max(num_windows, 1)
+        val_metrics["val/num_windows"] = num_windows
 
         return val_metrics
 
