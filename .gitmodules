@@ -1,0 +1,3 @@
+[submodule "models/lewm"]
+	path = models/lewm
+	url = https://github.com/mahfoudhsam/le-wm.git
