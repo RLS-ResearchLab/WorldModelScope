@@ -1,4 +1,4 @@
-run_name: full_data-run2
+run_name: dinowm_dinov2encoder
 
 model:
   name: dino_wm
@@ -54,7 +54,7 @@ training:
   log_every: 50
   val_every: 2000
   save_every: 1000
-  steps_per_run: 2000
+  steps_per_run: 8000
   warmup_steps: 800
 
 resume_from: auto
@@ -69,8 +69,7 @@ scheduler:
   min_lr: 1.0e-6
 logging:
   backend: console
-  output_dir: outputs/dino_wm/full_dataset
+  output_dir: outputs/dino_wm/dinov2_encoder
 
 checkpoint:
-  dir: checkpoints/dino_wm/full_dataset
- 
+  dir: checkpoints/dino_wm/dinov2_encoder
