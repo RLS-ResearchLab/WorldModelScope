@@ -15,6 +15,7 @@ def build_dataset(data_cfg, split):
     params = dict(data_cfg.get("params", {}))
     split_cfg = data_cfg.get(split, {})
     params.update(split_cfg)
+    params["image_size"] = image_size
 
     return DATASET_REGISTRY[name](split=split, **params)
 
@@ -26,7 +27,8 @@ def build_dataloader(config, split="train"):
     Shuffling for train is handled internally by the dataset (shuffle=True by default when split='train').
     """
     data_cfg = config["data"]
-    dataset = build_dataset(data_cfg, split=split)
+    image_size = config["model"]["image_size"]
+    dataset = build_dataset(data_cfg, split=split, image_size=image_size)
 
     return DataLoader(
         dataset,

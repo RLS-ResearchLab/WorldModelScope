@@ -153,6 +153,7 @@ class BridgeDataset(IterableDataset):
         camera_key: str = "image_0",
         source_fps: float = 5.0,
         target_fps: float = 4.0,
+        image_size: int = 224,          # NEW
         shuffle: bool | None = None,
     ) -> None:
 
@@ -180,6 +181,8 @@ class BridgeDataset(IterableDataset):
 
         self.source_fps = source_fps
         self.target_fps = target_fps
+
+        self.image_size = image_size    # NEW
 
         self.shuffle = (
             split == "train"
@@ -301,12 +304,13 @@ class BridgeDataset(IterableDataset):
 
                 frames = np.stack(
                     [
-                        steps[i]
-                        ["observation"]
-                        [self.camera_key]
+                        tf.image.resize(
+                            steps[i]["observation"][self.camera_key],
+                            [self.image_size, self.image_size],
+                        ).numpy()
                         for i in selected
                     ]
-                )
+)
 
                 states = np.stack(
                     [

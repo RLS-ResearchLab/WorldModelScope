@@ -39,8 +39,8 @@ data:
     target_fps: 4.0
   val:
     data_dir: raw/bridge_dataset/1.0.0
-    clip_len: 128                # long clips are now GOOD -- more windows per clip, see Trainer.validate
-    stride: 64
+    clip_len: 13             # long clips are now GOOD -- more windows per clip, see Trainer.validate
+    stride: 13
     camera_key: image_0
     source_fps: 5.0
     target_fps: 4.0
@@ -55,7 +55,7 @@ training:
   log_every: 50
   val_every: 2000
   save_every: 1000
-  steps_per_run: 2000
+  steps_per_run: 1000
   warmup_steps: 800
 
 resume_from: auto
