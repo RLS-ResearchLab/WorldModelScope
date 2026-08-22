@@ -1,3 +1,6 @@
+import torch 
+import torch.nn as nn
+import timm
 class EUPEEncoder(nn.Module):
     def __init__(self, img_size: int = 224):
         super().__init__()
