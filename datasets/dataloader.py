@@ -8,7 +8,7 @@ DATASET_REGISTRY = {
 }
 
 
-def build_dataset(data_cfg, split):
+def build_dataset(data_cfg, split, image_size=224):
     name = data_cfg["name"]
     if name not in DATASET_REGISTRY:
         raise ValueError(f"Unknown dataset '{name}'. Available: {list(DATASET_REGISTRY)}")
