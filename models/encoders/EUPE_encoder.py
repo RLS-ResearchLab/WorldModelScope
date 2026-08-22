@@ -1,73 +1,36 @@
-"""
-EUPE ViT-Small encoder.
-
-Loads the pretrained EUPE ViT-Small model through timm.
-Weights are automatically downloaded from Hugging Face on first use
-and cached locally for subsequent runs.
-
-Input:
-    [B, 3, H, W]
-
-Output:
-    [B, N, 384]
-    where N = (H / 16) * (W / 16)
-
-Example:
-    224x224 -> [B, 196, 384]
-    256x256 -> [B, 256, 384]
-"""
-
-import torch
-import torch.nn as nn
-import timm
-
-
 class EUPEEncoder(nn.Module):
-    """
-    Frozen EUPE ViT-Small encoder.
-
-    Uses:
-        vit_small_patch16_dinov3_qkvb.eupe_lvd1689m
-
-    Output:
-        Patch-level EUPE representations.
-    """
-
-    def __init__(self):
+    def __init__(self, img_size: int = 224):
         super().__init__()
 
         self.model = timm.create_model(
             "vit_small_patch16_dinov3_qkvb.eupe_lvd1689m",
             pretrained=True,
             num_classes=0,
+            img_size=img_size,   # <-- force 224 so patch grid = 14x14 = 196,
+                                  #     matching predictor's num_patches=197 (196+action)
         )
 
         self.model.eval()
 
-        # EUPE ViT-Small
         self.embed_dim = 384
         self.patch_size = 16
+        self.img_size = img_size
 
-        # CLS + register/storage tokens
         self.num_prefix_tokens = self.model.num_prefix_tokens
 
-        # Freeze encoder
         for param in self.model.parameters():
             param.requires_grad = False
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: [B, 3, H, W]
-
-        Returns:
-            Patch tokens: [B, N, 384]
-        """
+        if x.shape[-1] != self.img_size or x.shape[-2] != self.img_size:
+            raise ValueError(
+                f"EUPEEncoder was built for {self.img_size}x{self.img_size} "
+                f"input (to match the predictor's num_patches), but got "
+                f"{tuple(x.shape[-2:])}. Resize upstream instead of changing "
+                f"the encoder's img_size."
+            )
 
         features = self.model.forward_features(x)
-
-        # Remove CLS/register tokens.
         patch_tokens = features[:, self.num_prefix_tokens:, :]
-
         return patch_tokens
