@@ -54,7 +54,7 @@ training:
   log_every: 50
   val_every: 2000
   save_every: 1000
-  steps_per_run: 8000
+  steps_per_run: 1000 
   warmup_steps: 800
 
 resume_from: auto
