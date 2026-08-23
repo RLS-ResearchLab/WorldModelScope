@@ -27,8 +27,41 @@ class DecoderTrainer(Trainer):
     def prepare_batch(self, raw_batch):
         return {"observations": raw_batch["frames"]}
 
+    @torch.no_grad()
     def validate(self):
-        val_metrics = super().validate()
+        # Can't reuse Trainer.validate(): it windows each val clip into num_hist+1-length
+        # slices (self.model.num_hist), which only makes sense for dino_wm's sequence
+        # predictor. The decoder treats every frame independently, so each val batch is
+        # scored as-is via prepare_batch, same as training.
+        self.model.eval()
+
+        total_loss = 0.0
+        num_batches = 0
+        metrics_sum = {}
+
+        for raw_batch in self.val_loader:
+            raw_batch = self._move_batch(raw_batch)
+            batch = self.prepare_batch(raw_batch)
+
+            with torch.autocast(
+                device_type=self.device_type, dtype=self.amp_dtype, enabled=self.use_amp,
+            ):
+                output = self.model.validation_step(batch)
+                loss, metrics = output if isinstance(output, tuple) else (output, {})
+
+            total_loss += loss.detach().item()
+            num_batches += 1
+            for name, value in metrics.items():
+                if torch.is_tensor(value):
+                    value = value.detach().float().mean().item()
+                metrics_sum[name] = metrics_sum.get(name, 0.0) + value
+
+        self.model.train()
+
+        val_metrics = {"val/loss": total_loss / max(num_batches, 1)}
+        for name, value in metrics_sum.items():
+            val_metrics[f"val/{name}"] = value / max(num_batches, 1)
+
         self._log_visualizations()
         return val_metrics
 
