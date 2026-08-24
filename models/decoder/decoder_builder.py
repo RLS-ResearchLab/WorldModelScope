@@ -52,6 +52,7 @@ class EncoderDecoderModel(nn.Module):
         self.dino_wm, self.decoder = build_decoder_pipeline(config)
         self.img_size = config["decoder"]["img_size"]
         self.l1_weight = config["training"].get("l1_weight", 0.1)
+        self.noise_tau = config["decoder"].get("noise_tau", 0.0)
 
     def state_dict(self, *args, **kwargs):
         return self.decoder.state_dict(*args, **kwargs)
@@ -69,25 +70,40 @@ class EncoderDecoderModel(nn.Module):
         frames = observations.reshape(B * T, C, H, W)
         return F.interpolate(frames, size=(self.img_size, self.img_size), mode="bilinear", align_corners=False)
 
-    def _reconstruct(self, observations):
+    def _reconstruct(self, observations, add_noise=False):
         with torch.no_grad():
             latents = self.dino_wm.encode_observations(observations)  # [B, T, P, D]
         B, T, P, D = latents.shape
         frames = self._prepare_frames(observations)
-        recon = self.decoder(latents.reshape(B * T, P, D))
+        latents = latents.reshape(B * T, P, D)
+        if add_noise:
+            latents = self._augment_latents(latents)
+        recon = self.decoder(latents)
         return frames, recon
 
-    def _step(self, batch):
-        frames, recon = self._reconstruct(batch["observations"])
+    def _augment_latents(self, latents):
+        # RAE-style noise-augmented decoding (Zheng et al., "Diffusion Transformers with
+        # Representation Autoencoders"): smooth the discrete training latents with small
+        # additive Gaussian noise so the decoder generalizes to slightly off-distribution
+        # latents (e.g. from a trained predictor) instead of only ever seeing clean encoder
+        # output. sigma is itself resampled per-batch from a half-normal so the decoder sees
+        # a range of noise levels rather than one fixed scale.
+        if self.noise_tau <= 0:
+            return latents
+        sigma = torch.randn(latents.shape[0], 1, 1, device=latents.device, dtype=latents.dtype).abs() * self.noise_tau
+        return latents + torch.randn_like(latents) * sigma
+
+    def _step(self, batch, add_noise=False):
+        frames, recon = self._reconstruct(batch["observations"], add_noise=add_noise)
         loss = F.mse_loss(recon, frames) + self.l1_weight * F.l1_loss(recon, frames)
         return loss, {"recon_loss": loss.detach()}
 
     def compute_loss(self, batch):
-        return self._step(batch)
+        return self._step(batch, add_noise=True)
 
     @torch.no_grad()
     def validation_step(self, batch):
-        return self._step(batch)
+        return self._step(batch, add_noise=False)
 
     @torch.no_grad()
     def get_visualizations(self, batch, max_images=8):

@@ -23,6 +23,8 @@ decoder:
   num_heads: 6
   mlp_ratio: 4.0
   dropout: 0.0
+  noise_tau: 0.05   # RAE noise-augmented decoding: per-batch sigma ~ |N(0, tau^2)|,
+                    # then latents += N(0, sigma^2). 0 disables it.
 
 data:
   name: bridge

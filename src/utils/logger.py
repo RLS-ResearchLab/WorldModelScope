@@ -25,13 +25,34 @@ class Logger:
             )
         )
 
-        write_header = not self.log_file.exists()
-
-        with open(self.log_file, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=row.keys())
-            if write_header:
+        # Different callers (e.g. a training step vs. a validation pass) log different-shaped
+        # metric dicts. Keep one fixed, growing column schema so rows always line up under the
+        # header instead of being written positionally under whatever fieldnames the first-ever
+        # row happened to have.
+        if not self.log_file.exists():
+            with open(self.log_file, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=list(row.keys()))
                 writer.writeheader()
-            writer.writerow(row)
+                writer.writerow(row)
+            return
+
+        with open(self.log_file, newline="") as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            existing_rows = list(reader)
+
+        new_keys = [key for key in row.keys() if key not in fieldnames]
+        if new_keys:
+            fieldnames = fieldnames + new_keys
+            with open(self.log_file, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames, restval="")
+                writer.writeheader()
+                writer.writerows(existing_rows)
+                writer.writerow(row)
+        else:
+            with open(self.log_file, "a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames, restval="")
+                writer.writerow(row)
 
     def save_config(self, config):
         path = self.output_dir / "config.json"
