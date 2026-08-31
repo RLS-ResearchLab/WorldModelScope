@@ -42,12 +42,18 @@ from torch import Tensor
 
 @dataclass
 class TeacherForced:
-    """Aligned one-step teacher-forced tensors, all ``(B, K, P, D)``."""
+    """Aligned one-step teacher-forced tensors, all ``(B, K, P, D)``.
+
+    ``target[:, i]`` is the encoder's real latent for frame ``target_start + i``;
+    the runner uses ``target_start`` to line per-frame actions / states up with
+    the predictions.
+    """
 
     pred: Tensor
     target: Tensor
     z_prev: Tensor
     z_prev2: Tensor | None = None
+    target_start: int = 1
 
 
 @runtime_checkable

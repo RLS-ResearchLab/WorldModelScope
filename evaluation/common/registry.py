@@ -5,9 +5,28 @@ metric/runner code free of any model dependency.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable
 
 _BUILDERS: dict[str, Callable] = {}
+
+
+def resolved_name(model: str, ckpt: str) -> str:
+    """The results-folder / W&B-run stem for a (model, checkpoint), known without
+    building the adapter -- so a run can be named at init. DINO-WM's encoder type
+    lives in the checkpoint's embedded config; the others map 1:1."""
+    if model != "dino_wm":
+        return {"lewm": "lewm_bridge"}.get(model, model)
+    try:
+        import torch
+
+        cfg = torch.load(ckpt, map_location="cpu", weights_only=False)["config"]
+        return f"dino_wm_{cfg['model']['encoder']['type']}"
+    except Exception:
+        for tag in ("dinov2", "eupe"):
+            if tag in str(ckpt):
+                return f"dino_wm_{tag}"
+        return model
 
 
 def register(name: str):

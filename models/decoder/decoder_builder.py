@@ -6,6 +6,21 @@ from models.world_models.factory import build_model
 from models.decoder.decoder_model import PatchDecoder
 
 
+def build_encoder_decoder(config):
+    """Pick the right frozen-encoder / trainable-decoder wrapper from the config shape:
+    a `vjepa` block -> the V-JEPA video decoder, a `lewm` block -> the LeWM single-vector
+    decoder, otherwise the DINO-WM patch decoder."""
+    if "vjepa" in config:
+        from models.decoder.vjepa_decoder_builder import VJEPADecoderModel
+
+        return VJEPADecoderModel(config)
+    if "lewm" in config:
+        from models.decoder.lewm_decoder_builder import LeWMDecoderModel
+
+        return LeWMDecoderModel(config)
+    return EncoderDecoderModel(config)
+
+
 def build_decoder_pipeline(config):
     """Builds a frozen DINOWM (for its encoder+feature_adapter) and a trainable PatchDecoder
     sized to match the exact token grid/dim that encode_observations() produces."""

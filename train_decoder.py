@@ -14,7 +14,7 @@ from src.utils.scheduler import build_scheduler
 from src.utils.logger import Logger, WandbLogger, CombinedLogger
 
 from datasets.dataloader import build_dataloaders
-from models.decoder.decoder_builder import EncoderDecoderModel
+from models.decoder.decoder_builder import build_encoder_decoder
 
 
 class DecoderTrainer(Trainer):
@@ -94,12 +94,15 @@ def main(config_path):
         resume_path = find_latest_checkpoint(config["checkpoint"]["dir"])
     resume_wandb_id = peek_wandb_run_id(resume_path) if resume_path else None
 
-    model = EncoderDecoderModel(config)
+    model = build_encoder_decoder(config)
 
     # build_dataloaders/build_dataloader expect a flat config["model"]["image_size"] (the
-    # dino_wm config shape) -- ours nests the model block under config["dino_wm"]["model"],
-    # so adapt a view rather than changing the shared dataloader code.
-    loader_cfg = OmegaConf.create({"data": config["data"], "model": config["dino_wm"]["model"]})
+    # dino_wm config shape) -- ours nests the model block under config["dino_wm"],
+    # config["vjepa"] or config["lewm"], so adapt a view rather than changing the shared
+    # dataloader code.
+    model_key = next(k for k in ("dino_wm", "vjepa", "lewm") if k in config)
+    model_cfg = config[model_key]["model"]
+    loader_cfg = OmegaConf.create({"data": config["data"], "model": model_cfg})
     loaders = build_dataloaders(loader_cfg)
 
     optimizer = build_optimizer(model, config["optimizer"])
@@ -107,7 +110,7 @@ def main(config_path):
 
     local_logger = Logger(config["logging"]["output_dir"])
     wandb_logger = WandbLogger(
-        project="dino-wm-decoder", name=config.get("run_name"),
+        project=config.get("wandb_project", "dino-wm-decoder"), name=config.get("run_name"),
         output_dir=config["logging"]["output_dir"], config=config, resume_id=resume_wandb_id,
     )
     logger = CombinedLogger([local_logger, wandb_logger])

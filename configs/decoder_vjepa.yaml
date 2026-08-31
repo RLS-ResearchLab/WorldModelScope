@@ -1,0 +1,49 @@
+run_name: decoder_vjepa
+wandb_project: vjepa-decoder
+
+# Frozen V-JEPA 2.1 ViT-B video encoder. A 16-frame clip -> 8 latent frames of
+# 196 x 768 tokens (tubelet 2). Each latent frame is decoded to a 224x224 image
+# and trained against raw frame 2k. Only the decoder trains.
+vjepa:
+  encoder_checkpoint: checkpoints/vjepa2_1_base/vjepa2_1_vitb_dist_vitG_384.pt
+  model:
+    image_size: 224          # consumed by build_dataloaders
+
+decoder:
+  img_size: 224
+  patch_size: 16             # grid = 14x14 = 196, matches V-JEPA's per-frame token count
+  decoder_dim: 768           # wider than the DINO decoders (768-D latents vs 384)
+  num_layers: 8
+  num_heads: 8
+  mlp_ratio: 4.0
+  dropout: 0.0
+  noise_tau: 0.05            # RAE noise-augmented decoding, same trick as the DINO decoders:
+                             # per-sample sigma ~ |N(0, tau^2)|, then latents += N(0, sigma^2).
+                             # 0 disables it.
+
+data:
+  name: bridge
+  batch_size: 4              # 16-frame clips -> 8 decode targets each -> effective 32/step
+  num_workers: 4
+  pin_memory: true
+  train: {data_dir: raw/bridge_dataset/1.0.0, clip_len: 16, stride: 8, camera_key: image_0, source_fps: 5.0, target_fps: 4.0}
+  val:   {data_dir: raw/bridge_dataset/1.0.0, clip_len: 16, stride: 8, camera_key: image_0, source_fps: 5.0, target_fps: 4.0}
+
+optimizer: {name: adamw, lr: 3.0e-4, weight_decay: 0.05, betas: [0.9, 0.999]}
+scheduler: {type: cosine, warmup_steps: 200, min_lr: 1.0e-6}
+
+training:
+  device: cuda
+  precision: bf16
+  max_steps: 15000
+  steps_per_run: 10000        # bump to 10000, then 15000 on later reruns (resume_from: auto)
+  grad_accumulation_steps: 2 # effective batch 8 clips = 64 decode targets
+  max_grad_norm: 1.0
+  val_every: 1000            # every 1k steps: val loss + a reconstruction grid logged to W&B
+  save_every: 1000
+  log_every: 50
+  l1_weight: 0.1
+
+resume_from: auto
+checkpoint: {dir: checkpoints/decoder/vjepa}
+logging: {output_dir: outputs/decoder/vjepa}

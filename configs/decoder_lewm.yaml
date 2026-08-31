@@ -1,0 +1,48 @@
+run_name: decoder_lewm
+wandb_project: lewm-decoder
+
+# Frozen LeWM-bridge encoder (ViT-S/14 + BatchNorm projector). Each frame -> one
+# projected CLS vector (384-d, tokens_per_frame = 1) -- the exact space the LeWM
+# predictor and Tier 4 operate on. A GlobalLatentDecoder inverts that single
+# vector back to a 224x224 image. Only the decoder trains.
+lewm:
+  encoder_checkpoint: checkpoints/lewm_bridge/step_0016000.pt   # the evaluated checkpoint
+  model:
+    image_size: 224          # consumed by build_dataloaders
+
+decoder:
+  img_size: 224
+  patch_size: 16             # decoder-internal output grid (14x14), NOT tied to the encoder
+  decoder_dim: 512
+  num_layers: 8
+  num_heads: 8
+  mlp_ratio: 4.0
+  dropout: 0.0
+  noise_tau: 0.05            # RAE noise-augmented decoding, same trick as the DINO/V-JEPA decoders
+
+data:
+  name: bridge
+  batch_size: 16            # single-vector decode is light; a larger batch steadies the
+  num_workers: 4            # mean-image collapse risk inherent to a 1-token bottleneck
+  pin_memory: true
+  train: {data_dir: raw/bridge_dataset/1.0.0, clip_len: 4, stride: 4, camera_key: image_0, source_fps: 5.0, target_fps: 4.0}
+  val:   {data_dir: raw/bridge_dataset/1.0.0, clip_len: 4, stride: 4, camera_key: image_0, source_fps: 5.0, target_fps: 4.0}
+
+optimizer: {name: adamw, lr: 2.0e-4, weight_decay: 0.05, betas: [0.9, 0.999]}
+scheduler: {type: cosine, warmup_steps: 200, min_lr: 1.0e-6}
+
+training:
+  device: cuda
+  precision: bf16
+  max_steps: 15000
+  steps_per_run: 15000       # straight through in one run; lower it to checkpoint-and-stop in chunks
+  grad_accumulation_steps: 1
+  max_grad_norm: 1.0
+  val_every: 1000            # every 1k steps: val loss + a reconstruction grid logged to W&B
+  save_every: 1000
+  log_every: 50
+  l1_weight: 0.1
+
+resume_from: auto
+checkpoint: {dir: checkpoints/decoder/lewm}
+logging: {output_dir: outputs/decoder/lewm}

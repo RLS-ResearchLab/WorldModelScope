@@ -57,7 +57,7 @@ def counterfactual_divergence(
 
 
 def action_inversion_r2(
-    z_t: Tensor, z_next: Tensor, a_t: Tensor, train_frac: float = 0.8, ridge: float = 1.0
+    z_t: Tensor, z_next: Tensor, a_t: Tensor, train_frac: float = 0.8, ridge: float = 10.0
 ) -> float:
     """Fit a linear map ``(pool(z_t), pool(z_{t+1})) -> a_t`` by ridge regression
     on a train split, report mean per-dim R2 on the held-out split.
