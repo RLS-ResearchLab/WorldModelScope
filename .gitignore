@@ -25,10 +25,23 @@ checkpoints/
 # Datasets & Temp Files
 raw/
 
+# Extracted video frames (tens of GB; regenerate from raw/ with the frame-extraction scripts)
+frames/
+
 
 # Model Outputs & Logs
 outputs/
 *.log
+
+# Decoder pixel-comparison dumps: sample PNGs + per-step metrics.csv, regenerate from
+# checkpoints with the decoder-comparison script. Keep the code, not the renders.
+evaluation/decoder_comparison/
+
+# Rendered deliverables are build artifacts -- keep the .md/.json sources, regenerate
+# the renders with evaluation/render_report.py / evaluation/render_field_notes.py
+results/*.pdf
+evaluation/FIELD_NOTES.pdf
+evaluation/FIELD_NOTES.txt
 
 # Editor & IDE Configs
 .vscode/
